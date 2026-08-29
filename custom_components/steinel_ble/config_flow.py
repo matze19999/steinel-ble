@@ -47,7 +47,7 @@ from .const import (
     STEINEL_COMPANY_ID,
 )
 from .coordinator import SteinelMeshHub
-from .protocol import ProtocolError
+from .protocol import GLOBAL_RESET_DATA, GLOBAL_RESET_OPCODE, ProtocolError
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -74,6 +74,10 @@ class _MeshSetupMixin:
         self._address: str | None = None
         self._name: str | None = None
         self._discovery: BluetoothServiceInfoBleak | None = None
+        # Set when the user explicitly chose "reset and add" - allows
+        # async_step_confirm to factory-reset a lamp that belongs to an
+        # unknown mesh instead of aborting, see async_step_reset_and_add.
+        self._reset_before_provision: bool = False
 
     async def _async_hub(self) -> SteinelMeshHub:
         if self._hub is None:
@@ -91,6 +95,16 @@ class _MeshSetupMixin:
             for node in hub.network.nodes.values()
             if (node.get("capabilities") or {}).get(CAPABILITY_ONOFF)
         }
+
+    async def async_step_reset_and_add(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
+        """Entry point for the "reset lamp and add to mesh" menu option.
+
+        Reuses the normal device picker; the only difference is the flag set
+        here, which lets async_step_confirm factory-reset a lamp that turns
+        out to belong to an unknown mesh instead of aborting.
+        """
+        self._reset_before_provision = True
+        return await self.async_step_pick_device(user_input)
 
     async def async_step_pick_device(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
         hub = await self._async_hub()
@@ -140,8 +154,12 @@ class _MeshSetupMixin:
         assert self._address is not None
         if user_input is None:
             hub = await self._async_hub()
-            with contextlib.suppress(Exception):
-                self.hass.async_create_task(hub.async_identify(self._address, True, duration=10))
+            # Best-effort blink while the confirmation form is shown - a
+            # weak/unreliable BLE link must not surface as an error here, and
+            # the exception has to be swallowed *inside* the background task
+            # (not around the synchronous async_create_task() call) or
+            # asyncio logs it as "Task exception was never retrieved".
+            self.hass.async_create_task(self._async_best_effort_identify(hub, self._address))
             return self.async_show_form(
                 step_id="confirm",
                 data_schema=vol.Schema({vol.Optional("name", default=self._name or self._address): str}),
@@ -159,6 +177,8 @@ class _MeshSetupMixin:
                 # service, so just retry binding the light models instead
                 # of trying (and failing) to provision it again.
                 return await self.async_step_provision(retry_unicast=unicast)
+            if self._reset_before_provision:
+                return await self.async_step_reset_confirm()
             return self.async_abort(
                 reason="already_provisioned_elsewhere",
                 description_placeholders={"name": self._name, "address": self._address},
@@ -166,6 +186,39 @@ class _MeshSetupMixin:
         if role == "unknown":
             return self.async_abort(reason="cannot_connect", description_placeholders={"address": self._address})
         return await self.async_step_provision()
+
+    async def async_step_reset_confirm(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
+        """Confirm and perform a factory reset of a lamp on an unknown mesh.
+
+        Global Reset (proprietary GATT opcode 0xE5) works independently of
+        Bluetooth Mesh provisioning state - no NetKey/AppKey of the foreign
+        mesh is needed - so a lamp that belongs to a mesh we don't manage
+        can still be reset and then provisioned into ours.
+        """
+        assert self._address is not None
+        if user_input is None:
+            return self.async_show_form(
+                step_id="reset_confirm",
+                data_schema=vol.Schema({}),
+                description_placeholders={"name": self._name or "", "address": self._address},
+            )
+        try:
+            async with ble.DirectClient(self.hass, self._address, 10.0) as client:
+                await client.command(GLOBAL_RESET_OPCODE, GLOBAL_RESET_DATA, 10.0)
+        except ProtocolError as exc:
+            _LOGGER.warning("Factory reset of %s failed: %s", self._address, exc)
+            return self.async_abort(reason="reset_failed", description_placeholders={"error": str(exc)})
+        try:
+            await ble.async_wait_for_service(self.hass, {self._address}, MESH_PROVISIONING_SERVICE, 30.0)
+        except ProtocolError as exc:
+            _LOGGER.warning("%s did not re-advertise as unprovisioned after reset: %s", self._address, exc)
+            return self.async_abort(reason="reset_not_confirmed", description_placeholders={"error": str(exc)})
+        return await self.async_step_provision()
+
+    @staticmethod
+    async def _async_best_effort_identify(hub: SteinelMeshHub, address: str) -> None:
+        with contextlib.suppress(Exception):
+            await hub.async_identify(address, True, duration=10)
 
     async def _async_detect_role(self) -> str:
         services: set[str] | None = None
@@ -291,12 +344,12 @@ class SteinelConfigFlow(_MeshSetupMixin, ConfigFlow, domain=DOMAIN):
     @staticmethod
     @callback
     def async_get_options_flow(config_entry: ConfigEntry) -> SteinelOptionsFlow:
-        return SteinelOptionsFlow(config_entry)
+        return SteinelOptionsFlow()
 
     async def async_step_user(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
         if self._async_current_entries():
             return self.async_abort(reason="single_instance_allowed")
-        return self.async_show_menu(step_id="user", menu_options=["pick_device", "import_mesh"])
+        return self.async_show_menu(step_id="user", menu_options=["pick_device", "reset_and_add", "import_mesh"])
 
     async def async_step_bluetooth(self, discovery_info: BluetoothServiceInfoBleak) -> ConfigFlowResult:
         if self._async_current_entries():
@@ -319,14 +372,18 @@ class SteinelConfigFlow(_MeshSetupMixin, ConfigFlow, domain=DOMAIN):
 class SteinelOptionsFlow(_MeshSetupMixin, OptionsFlow):
     """Add further devices to the existing hub, or configure a firmware source."""
 
-    def __init__(self, config_entry: ConfigEntry) -> None:
+    def __init__(self) -> None:
+        # NOTE: self.config_entry is a read-only property populated by the
+        # flow manager itself on recent Home Assistant versions - assigning
+        # it here raises AttributeError ("no setter").
         super().__init__()
-        self.config_entry = config_entry
         self._mixin_init()
         self._firmware_unicast: int | None = None
 
     async def async_step_init(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
-        return self.async_show_menu(step_id="init", menu_options=["pick_device", "import_mesh", "configure_firmware"])
+        return self.async_show_menu(
+            step_id="init", menu_options=["pick_device", "reset_and_add", "import_mesh", "configure_firmware"]
+        )
 
     async def _async_finish(self, note: str) -> ConfigFlowResult:
         _LOGGER.debug(note)

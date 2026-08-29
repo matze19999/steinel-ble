@@ -4,6 +4,7 @@
       "user": {
         "menu_options": {
           "pick_device": "Discover a new (factory-reset) lamp",
+          "reset_and_add": "Reset a lamp from an unknown mesh and add it",
           "import_mesh": "Import an existing mesh (e.g. from the steinel_ble.py CLI tool)"
         }
       },
@@ -21,6 +22,10 @@
           "name": "Name"
         }
       },
+      "reset_confirm": {
+        "title": "Factory-reset and add {name}?",
+        "description": "{name} ({address}) currently belongs to a different, unknown Bluetooth Mesh network (for example the STEINEL Connect app, or a previous installation). Continuing sends a Global Reset to the lamp, permanently erasing its current mesh membership - this cannot be undone. Afterwards it is added to your Home Assistant mesh like a factory-new lamp."
+      },
       "import_mesh": {
         "title": "Import an existing mesh",
         "description": "Paste the JSON content of a mesh configuration file produced by steinel_ble.py (for example state/mesh.json). Its NetKey/AppKey and any already-provisioned nodes will be imported; nodes need to be reachable once so their light models can be (re-)confirmed.",
@@ -37,12 +42,14 @@
     "abort": {
       "single_instance_allowed": "Only one STEINEL mesh hub is needed; add further lamps via the integration's options (\"Add device\").",
       "already_configured": "This device is already configured.",
-      "already_provisioned_elsewhere": "{name} ({address}) already belongs to a different Bluetooth Mesh network (for example the STEINEL Connect app). It must be factory-reset before Home Assistant can provision it, or import that mesh's keys instead.",
+      "already_provisioned_elsewhere": "{name} ({address}) already belongs to a different Bluetooth Mesh network (for example the STEINEL Connect app). Use \"Reset a lamp from an unknown mesh and add it\" if you want Home Assistant to factory-reset and take it over, or import that mesh's keys instead.",
       "cannot_connect": "Could not connect to {address} to determine its provisioning state. Make sure it is powered and in range of a Bluetooth adapter or proxy.",
       "provisioning_failed": "Provisioning failed: {error}",
       "no_light_model": "{name} was added to the mesh, but no supported light model (Generic OnOff) could be bound - it will not be usable as a light.",
       "mesh_already_configured": "A different mesh network is already configured; importing would mix two networks' keys. Remove the existing integration first if you really want to replace it.",
-      "no_nodes_imported": "No new nodes were found in that file."
+      "no_nodes_imported": "No new nodes were found in that file.",
+      "reset_failed": "Factory reset failed: {error}",
+      "reset_not_confirmed": "The lamp was sent a reset command, but did not start advertising as unprovisioned within the expected time: {error}"
     }
   },
   "options": {
@@ -50,6 +57,7 @@
       "init": {
         "menu_options": {
           "pick_device": "Add a device",
+          "reset_and_add": "Reset a lamp from an unknown mesh and add it",
           "import_mesh": "Import an existing mesh",
           "configure_firmware": "Configure a firmware update source"
         }
@@ -67,6 +75,10 @@
         "data": {
           "name": "Name"
         }
+      },
+      "reset_confirm": {
+        "title": "Factory-reset and add {name}?",
+        "description": "{name} ({address}) currently belongs to a different, unknown Bluetooth Mesh network. Continuing sends a Global Reset to the lamp, permanently erasing its current mesh membership - this cannot be undone. Afterwards it is added to your Home Assistant mesh like a factory-new lamp."
       },
       "import_mesh": {
         "title": "Import an existing mesh",
@@ -93,12 +105,14 @@
       "invalid_mesh_json": "Could not parse that as a STEINEL mesh configuration: {error}"
     },
     "abort": {
-      "already_provisioned_elsewhere": "{name} ({address}) already belongs to a different Bluetooth Mesh network. It must be factory-reset before Home Assistant can provision it.",
+      "already_provisioned_elsewhere": "{name} ({address}) already belongs to a different Bluetooth Mesh network. Use \"Reset a lamp from an unknown mesh and add it\" if you want Home Assistant to factory-reset and take it over.",
       "cannot_connect": "Could not connect to {address} to determine its provisioning state.",
       "provisioning_failed": "Provisioning failed: {error}",
       "no_light_model": "{name} was added to the mesh, but no supported light model (Generic OnOff) could be bound.",
       "mesh_already_configured": "This mesh already has different keys configured; importing would mix two networks.",
-      "no_nodes_imported": "No new nodes were found in that file."
+      "no_nodes_imported": "No new nodes were found in that file.",
+      "reset_failed": "Factory reset failed: {error}",
+      "reset_not_confirmed": "The lamp was sent a reset command, but did not start advertising as unprovisioned within the expected time: {error}"
     }
   },
   "entity": {

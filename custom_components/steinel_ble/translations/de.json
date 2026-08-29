@@ -4,6 +4,7 @@
       "user": {
         "menu_options": {
           "pick_device": "Neue (werkszurückgesetzte) Lampe suchen",
+          "reset_and_add": "Lampe aus unbekanntem Mesh zurücksetzen und hinzufügen",
           "import_mesh": "Bestehendes Mesh importieren (z. B. aus dem steinel_ble.py-CLI-Werkzeug)"
         }
       },
@@ -21,6 +22,10 @@
           "name": "Name"
         }
       },
+      "reset_confirm": {
+        "title": "{name} zurücksetzen und hinzufügen?",
+        "description": "{name} ({address}) gehört aktuell zu einem anderen, unbekannten Bluetooth-Mesh-Netzwerk (zum Beispiel der STEINEL-Connect-App oder einer vorherigen Installation). Beim Fortfahren wird ein Global Reset an die Lampe gesendet, der ihre aktuelle Mesh-Zugehörigkeit unwiderruflich löscht - das kann nicht rückgängig gemacht werden. Danach wird sie wie eine werksneue Lampe zu deinem Home-Assistant-Mesh hinzugefügt."
+      },
       "import_mesh": {
         "title": "Bestehendes Mesh importieren",
         "description": "Füge den JSON-Inhalt einer von steinel_ble.py erzeugten Mesh-Konfigurationsdatei ein (zum Beispiel state/mesh.json). NetKey/AppKey sowie bereits provisionierte Nodes werden übernommen; die Nodes müssen einmal erreichbar sein, damit ihre Lichtmodelle (erneut) bestätigt werden können.",
@@ -37,12 +42,14 @@
     "abort": {
       "single_instance_allowed": "Es wird nur ein STEINEL-Mesh-Hub benötigt; weitere Lampen über die Optionen der Integration (\"Gerät hinzufügen\") ergänzen.",
       "already_configured": "Dieses Gerät ist bereits eingerichtet.",
-      "already_provisioned_elsewhere": "{name} ({address}) gehört bereits zu einem anderen Bluetooth-Mesh-Netzwerk (zum Beispiel der STEINEL-Connect-App). Es muss erst werkszurückgesetzt werden, bevor Home Assistant es provisionieren kann - oder die Schlüssel dieses Mesh importieren.",
+      "already_provisioned_elsewhere": "{name} ({address}) gehört bereits zu einem anderen Bluetooth-Mesh-Netzwerk (zum Beispiel der STEINEL-Connect-App). Nutze \"Lampe aus unbekanntem Mesh zurücksetzen und hinzufügen\", wenn Home Assistant sie werkszurücksetzen und übernehmen soll - oder importiere stattdessen die Schlüssel dieses Mesh.",
       "cannot_connect": "Verbindung zu {address} zur Ermittlung des Provisionierungszustands fehlgeschlagen. Sicherstellen, dass das Gerät eingeschaltet und in Reichweite eines Bluetooth-Adapters oder -Proxys ist.",
       "provisioning_failed": "Provisionierung fehlgeschlagen: {error}",
       "no_light_model": "{name} wurde dem Mesh hinzugefügt, aber es konnte kein unterstütztes Lichtmodell (Generic OnOff) gebunden werden - es lässt sich nicht als Licht verwenden.",
       "mesh_already_configured": "Es ist bereits ein anderes Mesh-Netzwerk konfiguriert; ein Import würde Schlüssel zweier Netzwerke vermischen. Bestehende Integration zuerst entfernen, falls sie wirklich ersetzt werden soll.",
-      "no_nodes_imported": "In dieser Datei wurden keine neuen Nodes gefunden."
+      "no_nodes_imported": "In dieser Datei wurden keine neuen Nodes gefunden.",
+      "reset_failed": "Werksreset fehlgeschlagen: {error}",
+      "reset_not_confirmed": "Die Lampe wurde zurückgesetzt, hat sich aber nicht innerhalb der erwarteten Zeit als unprovisioniert gemeldet: {error}"
     }
   },
   "options": {
@@ -50,6 +57,7 @@
       "init": {
         "menu_options": {
           "pick_device": "Gerät hinzufügen",
+          "reset_and_add": "Lampe aus unbekanntem Mesh zurücksetzen und hinzufügen",
           "import_mesh": "Bestehendes Mesh importieren",
           "configure_firmware": "Firmware-Update-Quelle konfigurieren"
         }
@@ -67,6 +75,10 @@
         "data": {
           "name": "Name"
         }
+      },
+      "reset_confirm": {
+        "title": "{name} zurücksetzen und hinzufügen?",
+        "description": "{name} ({address}) gehört aktuell zu einem anderen, unbekannten Bluetooth-Mesh-Netzwerk. Beim Fortfahren wird ein Global Reset an die Lampe gesendet, der ihre aktuelle Mesh-Zugehörigkeit unwiderruflich löscht - das kann nicht rückgängig gemacht werden. Danach wird sie wie eine werksneue Lampe zu deinem Home-Assistant-Mesh hinzugefügt."
       },
       "import_mesh": {
         "title": "Bestehendes Mesh importieren",
@@ -93,12 +105,14 @@
       "invalid_mesh_json": "Konnte nicht als STEINEL-Mesh-Konfiguration gelesen werden: {error}"
     },
     "abort": {
-      "already_provisioned_elsewhere": "{name} ({address}) gehört bereits zu einem anderen Bluetooth-Mesh-Netzwerk. Es muss erst werkszurückgesetzt werden, bevor Home Assistant es provisionieren kann.",
+      "already_provisioned_elsewhere": "{name} ({address}) gehört bereits zu einem anderen Bluetooth-Mesh-Netzwerk. Nutze \"Lampe aus unbekanntem Mesh zurücksetzen und hinzufügen\", wenn Home Assistant sie werkszurücksetzen und übernehmen soll.",
       "cannot_connect": "Verbindung zu {address} zur Ermittlung des Provisionierungszustands fehlgeschlagen.",
       "provisioning_failed": "Provisionierung fehlgeschlagen: {error}",
       "no_light_model": "{name} wurde dem Mesh hinzugefügt, aber es konnte kein unterstütztes Lichtmodell (Generic OnOff) gebunden werden.",
       "mesh_already_configured": "Es ist bereits ein Mesh mit anderen Schlüsseln konfiguriert; ein Import würde zwei Netzwerke vermischen.",
-      "no_nodes_imported": "In dieser Datei wurden keine neuen Nodes gefunden."
+      "no_nodes_imported": "In dieser Datei wurden keine neuen Nodes gefunden.",
+      "reset_failed": "Werksreset fehlgeschlagen: {error}",
+      "reset_not_confirmed": "Die Lampe wurde zurückgesetzt, hat sich aber nicht innerhalb der erwarteten Zeit als unprovisioniert gemeldet: {error}"
     }
   },
   "entity": {

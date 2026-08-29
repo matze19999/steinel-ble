@@ -13,7 +13,16 @@ from .coordinator import SteinelMeshHub
 
 _LOGGER = logging.getLogger(__name__)
 
-PLATFORMS: list[Platform] = [Platform.LIGHT, Platform.BUTTON, Platform.UPDATE]
+PLATFORMS: list[Platform] = [
+    Platform.LIGHT,
+    Platform.BUTTON,
+    Platform.UPDATE,
+    Platform.BINARY_SENSOR,
+    Platform.SENSOR,
+    Platform.SWITCH,
+    Platform.NUMBER,
+    Platform.TEXT,
+]
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:

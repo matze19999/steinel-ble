@@ -56,6 +56,21 @@ BIND_MODELS: dict[str, int] = {
     CAPABILITY_HSL: MODEL_LIGHT_HSL_SERVER,
 }
 
+# STEINEL vendor models (company id 0x0563), see
+# STEINEL_BLE_KOMMUNIKATION.md section 4. Detected the same way as the SIG
+# light models above (attempt a bind, keep it if it succeeds), but exposed
+# as extra property/sensor entities rather than as light features.
+MODEL_LIGHT_LC_EXTENSION = 0x1001
+MODEL_SENSOR_EXTENSION = 0x1003
+
+CAPABILITY_LIGHT_LC_EXTENSION = "light_lc_extension"
+CAPABILITY_SENSOR_EXTENSION = "sensor_extension"
+
+VENDOR_BIND_MODELS: dict[str, int] = {
+    CAPABILITY_LIGHT_LC_EXTENSION: MODEL_LIGHT_LC_EXTENSION,
+    CAPABILITY_SENSOR_EXTENSION: MODEL_SENSOR_EXTENSION,
+}
+
 # STEINEL Light CTL colour temperature range as used by the Mesh Model spec
 # (raw Kelvin values used on the wire).
 CTL_TEMP_MIN_KELVIN = 800

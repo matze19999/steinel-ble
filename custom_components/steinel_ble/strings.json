@@ -128,6 +128,67 @@
       "firmware": {
         "name": "Firmware"
       }
+    },
+    "binary_sensor": {
+      "presence": {
+        "name": "Presence"
+      }
+    },
+    "sensor": {
+      "motion_sensed": {
+        "name": "Motion"
+      },
+      "people_count": {
+        "name": "People count"
+      },
+      "time_since_motion_sensed": {
+        "name": "Time since motion"
+      },
+      "time_since_presence_detected": {
+        "name": "Time since presence"
+      },
+      "ambient_temperature": {
+        "name": "Temperature"
+      },
+      "precise_ambient_temperature": {
+        "name": "Temperature (precise)"
+      },
+      "ambient_humidity": {
+        "name": "Humidity"
+      },
+      "co2": {
+        "name": "CO2"
+      },
+      "voc": {
+        "name": "VOC"
+      },
+      "noise": {
+        "name": "Noise"
+      },
+      "air_pressure": {
+        "name": "Air pressure"
+      },
+      "dew_point": {
+        "name": "Dew point"
+      },
+      "raw_property": {
+        "name": "{property} (raw)"
+      }
+    },
+    "switch": {
+      "light_property": {
+        "name": "{property}"
+      }
+    },
+    "number": {
+      "light_property": {
+        "name": "{property}"
+      }
+    },
+    "text": {
+      "light_property_raw": {
+        "name": "{property} (raw)"
+      }
     }
   }
 }

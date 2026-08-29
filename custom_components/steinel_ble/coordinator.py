@@ -22,6 +22,7 @@ from .const import (
     CAPABILITY_HSL,
     CAPABILITY_LIGHTNESS,
     CAPABILITY_ONOFF,
+    CAPABILITY_SENSOR_EXTENSION,
     DEFAULT_CONNECT_TIMEOUT,
     DEFAULT_UPDATE_INTERVAL,
     MESH_IDLE_DISCONNECT_SECONDS,
@@ -29,6 +30,7 @@ from .const import (
     MESH_RETRY_DELAY,
     NORDIC_DFU_SERVICE,
     STEINEL_COMPANY_ID,
+    VENDOR_BIND_MODELS,
 )
 from .mesh_store import MeshNetwork
 from .protocol import (
@@ -45,6 +47,7 @@ from .protocol import (
     aes_cmac,
     config_app_key_add,
     config_model_app_bind,
+    config_model_app_bind_vendor,
     ctl_set_payload,
     device_access_segment_count,
     hsl_set_payload,
@@ -114,9 +117,20 @@ class SteinelMeshHub:
         self._transports: dict[str, ble.MeshTransport] = {}
         self._transport_locks: dict[str, asyncio.Lock] = {}
         self._idle_handles: dict[str, asyncio.TimerHandle] = {}
+        # Shared across the binary_sensor and sensor platforms, which both
+        # need the same STEINEL Sensor Extension snapshot for a node - keyed
+        # so only one poller/connection per node exists, not one per platform.
+        self._sensor_coordinators: dict[int, SteinelSensorCoordinator] = {}
 
     async def async_setup(self) -> None:
         await self.network.async_load()
+
+    def sensor_coordinator(self, unicast: int, address: str, name: str) -> SteinelSensorCoordinator:
+        coordinator = self._sensor_coordinators.get(unicast)
+        if coordinator is None:
+            coordinator = SteinelSensorCoordinator(self.hass, self, unicast, address, name)
+            self._sensor_coordinators[unicast] = coordinator
+        return coordinator
 
     async def async_shutdown(self) -> None:
         """Close every pooled connection, e.g. when the integration unloads."""
@@ -289,21 +303,34 @@ class SteinelMeshHub:
             if len(status) < 6 or status[2] not in (0x00, 0x06):
                 raise ProtocolError(f"Config AppKey Add failed: status 0x{status[2] if len(status) >= 6 else -1:02X}")
 
+            bind_targets = [(name, model, False) for name, model in BIND_MODELS.items()] + [
+                (name, model, True) for name, model in VENDOR_BIND_MODELS.items()
+            ]
             for offset in range(elements):
                 element = unicast + offset
-                for name, model in BIND_MODELS.items():
+                for name, model, is_vendor in bind_targets:
                     seq = await self.network.async_reserve_sequence(1)
-                    payload = config_model_app_bind(element, self.network.app_key_index, model)
+                    if is_vendor:
+                        payload = config_model_app_bind_vendor(
+                            element, self.network.app_key_index, STEINEL_COMPANY_ID, model
+                        )
+                        model_id_bytes = STEINEL_COMPANY_ID.to_bytes(2, "little") + model.to_bytes(2, "little")
+                    else:
+                        payload = config_model_app_bind(element, self.network.app_key_index, model)
+                        model_id_bytes = model.to_bytes(2, "little")
                     for pdu in codec.encode_device_access(unicast, payload, device_key, seq):
                         await transport.send(0, pdu)
                     # Every bind in this loop shares the same Config Model App
                     # Status opcode, so a slow/duplicate reply to an earlier
                     # bind must not be mistaken for this one's answer - only
-                    # accept a response that echoes back this element+model.
-                    expected_tail = element.to_bytes(2, "little") + model.to_bytes(2, "little")
+                    # accept a response that echoes back this element+model
+                    # (a vendor model's identifier is 4 bytes - company+model
+                    # - instead of a SIG model's 2, so response[7:] naturally
+                    # picks up however many bytes are actually left).
+                    expected_tail = element.to_bytes(2, "little") + model_id_bytes
 
                     def _matches_this_bind(response: bytes, _tail: bytes = expected_tail) -> bool:
-                        return len(response) >= 9 and response[3:5] + response[7:9] == _tail
+                        return len(response) >= 9 and response[3:5] + response[7:] == _tail
 
                     try:
                         response = await self._async_wait_device_status(
@@ -321,8 +348,27 @@ class SteinelMeshHub:
                     if offset == 0:
                         capabilities[name] = bound
 
+            sensor_properties: list[str] = []
+            if capabilities.get(CAPABILITY_SENSOR_EXTENSION):
+                # One-time discovery: probe every known Sensor Extension
+                # property with a short timeout and remember which ones this
+                # particular product actually answers, so normal polling
+                # later only asks for those instead of timing out on ~20
+                # properties most products don't implement.
+                from .protocol import SENSOR_PROPERTIES, sensor_get
+
+                for prop_name, prop_id in SENSOR_PROPERTIES.items():
+                    seq = await self.network.async_reserve_sequence()
+                    await transport.send(0, codec.encode_access(unicast, sensor_get(prop_id), seq))
+                    try:
+                        await self._async_wait_vendor_response(transport, codec, unicast, 3.0)
+                        sensor_properties.append(prop_name)
+                    except ProtocolError:
+                        continue
+
         node["configured"] = any(capabilities.values())
         node["capabilities"] = capabilities
+        node["sensor_properties"] = sensor_properties
         await self.network.async_upsert_node(unicast, node)
         return capabilities
 
@@ -519,6 +565,127 @@ class SteinelMeshHub:
 
         return await self._async_retry_mesh(address, timeout, _do)
 
+    # -- STEINEL vendor properties (Light LC Extension / Sensor Extension) --
+
+    async def _async_wait_vendor_response(
+        self, transport: ble.MeshTransport, codec: MeshNetworkCodec, source: int, timeout: float
+    ) -> bytes:
+        """Wait for any STEINEL vendor Mesh Access message from ``source``.
+
+        The exact response opcode for Light LC Extension / Sensor Extension
+        property reads isn't confirmed by static analysis alone (see
+        STEINEL_BLE_KOMMUNIKATION.md section 4) - rather than guess one
+        specific opcode, this accepts whichever vendor opcode the node
+        actually answers with, as long as it carries the STEINEL company id
+        and comes from the node we just asked.
+        """
+        company_bytes = STEINEL_COMPANY_ID.to_bytes(2, "little")
+        deadline = asyncio.get_running_loop().time() + timeout
+        while True:
+            remaining = deadline - asyncio.get_running_loop().time()
+            if remaining <= 0:
+                raise ProtocolError("timeout waiting for a STEINEL vendor response")
+            pdu_type, network_pdu = await asyncio.wait_for(transport.queue.get(), remaining)
+            if pdu_type != 0:
+                continue
+            try:
+                decoded = codec.decode_access(network_pdu)
+            except ProtocolError:
+                continue
+            payload = decoded.access_payload
+            if (
+                decoded.source == source
+                and len(payload) >= 3
+                and 0xC0 <= payload[0] <= 0xFF
+                and payload[1:3] == company_bytes
+            ):
+                return payload[3:]
+
+    async def _async_vendor_exchange(
+        self, unicast: int, address: str, payload: bytes, timeout: float = DEFAULT_CONNECT_TIMEOUT
+    ) -> bytes:
+        async def _do(transport: ble.MeshTransport, codec: MeshNetworkCodec) -> bytes:
+            seq = await self.network.async_reserve_sequence()
+            await transport.send(0, codec.encode_access(unicast, payload, seq))
+            return await self._async_wait_vendor_response(transport, codec, unicast, timeout)
+
+        return await self._async_retry_mesh(address, timeout, _do)
+
+    async def async_get_light_property(
+        self, unicast: int, address: str, property_id: int, timeout: float = DEFAULT_CONNECT_TIMEOUT
+    ) -> bytes:
+        from .protocol import light_property_get
+
+        return await self._async_vendor_exchange(unicast, address, light_property_get(property_id), timeout)
+
+    async def async_set_light_property(
+        self, unicast: int, address: str, property_id: int, value: bytes, timeout: float = DEFAULT_CONNECT_TIMEOUT
+    ) -> bytes:
+        from .protocol import light_property_set
+
+        return await self._async_vendor_exchange(unicast, address, light_property_set(property_id, value), timeout)
+
+    async def async_get_sensor(
+        self, unicast: int, address: str, property_id: int | None = None, timeout: float = DEFAULT_CONNECT_TIMEOUT
+    ) -> bytes:
+        from .protocol import sensor_get
+
+        return await self._async_vendor_exchange(unicast, address, sensor_get(property_id), timeout)
+
+    async def async_get_sensor_setting(
+        self, unicast: int, address: str, sensor_id: int, setting_id: int, timeout: float = DEFAULT_CONNECT_TIMEOUT
+    ) -> bytes:
+        from .protocol import sensor_setting_get
+
+        return await self._async_vendor_exchange(unicast, address, sensor_setting_get(sensor_id, setting_id), timeout)
+
+    async def async_set_sensor_setting(
+        self,
+        unicast: int,
+        address: str,
+        sensor_id: int,
+        setting_id: int,
+        value: bytes,
+        timeout: float = DEFAULT_CONNECT_TIMEOUT,
+    ) -> bytes:
+        from .protocol import sensor_setting_set
+
+        return await self._async_vendor_exchange(
+            unicast, address, sensor_setting_set(sensor_id, setting_id, value), timeout
+        )
+
+    async def async_get_sensor_snapshot(
+        self, unicast: int, address: str, timeout: float = DEFAULT_CONNECT_TIMEOUT
+    ) -> dict[str, Any]:
+        """Read every property discovered for this node during binding (see
+        async_bind_capabilities) in one connection.
+
+        Best-effort per property: a property that doesn't answer this time
+        just comes back missing from the result instead of failing the
+        whole snapshot (only a connection-level failure raises).
+        """
+        from .protocol import SENSOR_PROPERTIES, parse_sensor_value, sensor_get
+
+        node = self.network.node_for_unicast(unicast) or {}
+        names: list[str] = node.get("sensor_properties") or []
+
+        async def _do(transport: ble.MeshTransport, codec: MeshNetworkCodec) -> dict[str, Any]:
+            values: dict[str, Any] = {}
+            for name in names:
+                property_id = SENSOR_PROPERTIES.get(name)
+                if property_id is None:
+                    continue
+                seq = await self.network.async_reserve_sequence()
+                await transport.send(0, codec.encode_access(unicast, sensor_get(property_id), seq))
+                try:
+                    response = await self._async_wait_vendor_response(transport, codec, unicast, timeout)
+                except ProtocolError:
+                    continue
+                values[name] = parse_sensor_value(name, response)
+            return values
+
+        return await self._async_retry_mesh(address, timeout, _do)
+
     # -- direct (proprietary) channel --------------------------------------
 
     async def async_identify(self, address: str, active: bool, duration: int = 10, timeout: float = DEFAULT_CONNECT_TIMEOUT) -> None:
@@ -660,3 +827,26 @@ class SteinelLightCoordinator(DataUpdateCoordinator[LightState]):
         merged.available = True
         merged.last_seen = time.monotonic()
         self.async_set_updated_data(merged)
+
+
+class SteinelSensorCoordinator(DataUpdateCoordinator[dict[str, Any]]):
+    """Polls a node's STEINEL Sensor Extension values (motion/presence/environment)."""
+
+    def __init__(
+        self, hass: HomeAssistant, hub: SteinelMeshHub, unicast: int, address: str, name: str, update_interval: int = 60
+    ) -> None:
+        super().__init__(
+            hass,
+            _LOGGER,
+            name=f"steinel_ble-{name}-sensors",
+            update_interval=timedelta(seconds=update_interval),
+        )
+        self.hub = hub
+        self.unicast = unicast
+        self.address = address
+
+    async def _async_update_data(self) -> dict[str, Any]:
+        try:
+            return await self.hub.async_get_sensor_snapshot(self.unicast, self.address)
+        except ProtocolError as exc:
+            raise UpdateFailed(str(exc)) from exc

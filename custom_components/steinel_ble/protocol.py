@@ -335,6 +335,291 @@ def light_property_set(property_id: int, value: bytes, special_backlight: bool =
     return vendor_access_payload(opcode, struct.pack("<H", prop) + value)
 
 
+def sensor_get(property_id: int | None = None) -> bytes:
+    params = b"" if property_id is None else struct.pack("<H", checked_u16(property_id, "sensor id"))
+    return vendor_access_payload(0xD0, params)
+
+
+def sensor_setting_get(sensor_id: int, setting_id: int) -> bytes:
+    return vendor_access_payload(
+        0xD4, struct.pack("<HH", checked_u16(sensor_id, "sensor id"), checked_u16(setting_id, "setting id"))
+    )
+
+
+def sensor_setting_set(sensor_id: int, setting_id: int, value: bytes) -> bytes:
+    return vendor_access_payload(
+        0xD5,
+        struct.pack("<HH", checked_u16(sensor_id, "sensor id"), checked_u16(setting_id, "setting id")) + value,
+    )
+
+
+# STEINEL Light LC Extension (vendor model 0x1001) property IDs, see
+# STEINEL_BLE_KOMMUNIKATION.md section 4.1. Values are read/written as raw
+# bytes via light_property_get/set (opcodes 0xC4/0xC5); the wire byte width
+# is per-property (the app uses a polymorphic serializer) and is not fully
+# determined from static analysis alone for every property - see
+# LIGHT_PROPERTY_KINDS below for this project's best-effort classification.
+LIGHT_PROPERTIES: dict[str, int] = {
+    "CONDITIONAL_LUX_MEASUREMENT": 1,
+    "CL_DEACTIVATE": 2,
+    "PRESENTATION_OFF_ENABLE": 3,
+    "PRESENTATION_ON_ENABLE": 4,
+    "ECO_MODE_ENABLE": 5,
+    "NEIGHBOURGROUPS_ENABLE": 6,
+    "NEIGHBOURGROUP_ON_LIGHTNESS": 7,
+    "KINDERGARTEN_FUNKTION_TIME": 8,
+    "BACKLIGHT_RUN_ON": 9,
+    "BACKLIGHT_BASELIGHT": 10,
+    "BACKLIGHT_NEIGHBOURGROUP_ON": 11,
+    "BASELIGHT_SETTING": 12,
+    "IMPULE_MODE_ENABLE": 13,
+    "TAGBETRIEB": 14,
+    "LUX_TEACH_SCENE_NUMBER": 15,
+    "TEST_MODE_SCENE_NUMBER": 16,
+    "BRIGHTNESS_SWITCH_OFF": 17,
+    "HLK_OUTPUT_ACTIVE": 18,
+    "HLK_DELAY_TIME": 19,
+    "HLK_SWITCH_ON_DELAY": 20,
+    "ACTIVE_SCENE_NUMBER": 21,
+    "NIGHTMATIC_MODE": 22,
+    "CONSTANT_LIGHT_HYSTERESIS": 23,
+    "DC_MODE_LIGHTNESS": 24,
+    "OWN_GROUP_ADDRESS": 25,
+    "SUB_SCENE_1_LIGHTNESS": 26,
+    "SUB_SCENE_2_LIGHTNESS": 27,
+    "SUB_SCENE_3_LIGHTNESS": 28,
+    "SUB_SCENE_4_LIGHTNESS": 29,
+    "SUB_SCENE_5_LIGHTNESS": 30,
+    "DEFAULT_SCENE_NUMBER": 31,
+    "CL_DIM_MODE": 32,
+    "NM_DIM_MINIMUM_LIGHTNESS": 33,
+    "NM_DIM_LUX_THRESHOLD_MIN": 34,
+    "NM_DIM_LUX_THRESHOLD_MAX": 35,
+    "FOLDING_DOOR1_SCENE_NUMBER": 39,
+    "FOLDING_DOOR1_LIGHT_SENSOR_ADDRESS": 40,
+    "FOLDING_DOOR1_MEMBER_ADDRESSES": 41,
+    "FOLDING_DOOR2_SCENE_NUMBER": 42,
+    "FOLDING_DOOR2_LIGHT_SENSOR_ADDRESS": 43,
+    "FOLDING_DOOR2_MEMBER_ADDRESSES": 44,
+    "FOLDING_DOOR3_SCENE_NUMBER": 45,
+    "FOLDING_DOOR3_LIGHT_SENSOR_ADDRESS": 46,
+    "FOLDING_DOOR3_MEMBER_ADDRESSES": 47,
+    "LABORATORY_FUNCTION": 48,
+    "SMOOTH_SCENE_TRANSITION": 49,
+    "MANUAL_OVERWRITE_PROTECT_ENABLE": 50,
+    "GLOBAL_MAX_LIGHTNESS": 51,
+    "GLOBAL_MIN_LIGHTNESS": 52,
+    "PB_IGNORE_MIN_MAX_LIGHTNESS_ENABLE": 53,
+}
+
+# Best-effort value-type classification per property, inferred from each
+# property's name and the "toBytes() is polymorphic per semantic value type
+# (boolean, percentage, lightness, scene number, group address, address
+# list)" note in STEINEL_BLE_KOMMUNIKATION.md section 4.1. Not confirmed
+# against real hardware for every property - a wrong guess fails safely
+# (the device rejects it with INVALID_VALUE/INVALID_PARAMETER/
+# INVALID_COMMAND_LENGTH rather than silently accepting bad data). Kinds:
+# "bool" (1 byte 0/1), "u8" (1 byte), "u16" (2 bytes LE), "lightness" (2
+# bytes LE, 0..65535), "scene" (2 bytes LE, 0..65535), "raw" (unknown
+# width/shape - addresses and address lists - exposed as hex only).
+LIGHT_PROPERTY_KINDS: dict[str, str] = {
+    "CONDITIONAL_LUX_MEASUREMENT": "u16",
+    "CL_DEACTIVATE": "bool",
+    "PRESENTATION_OFF_ENABLE": "bool",
+    "PRESENTATION_ON_ENABLE": "bool",
+    "ECO_MODE_ENABLE": "bool",
+    "NEIGHBOURGROUPS_ENABLE": "bool",
+    "NEIGHBOURGROUP_ON_LIGHTNESS": "lightness",
+    "KINDERGARTEN_FUNKTION_TIME": "u16",
+    "BACKLIGHT_RUN_ON": "u16",
+    "BACKLIGHT_BASELIGHT": "lightness",
+    "BACKLIGHT_NEIGHBOURGROUP_ON": "bool",
+    "BASELIGHT_SETTING": "lightness",
+    "IMPULE_MODE_ENABLE": "bool",
+    "TAGBETRIEB": "bool",
+    "LUX_TEACH_SCENE_NUMBER": "scene",
+    "TEST_MODE_SCENE_NUMBER": "scene",
+    "BRIGHTNESS_SWITCH_OFF": "lightness",
+    "HLK_OUTPUT_ACTIVE": "bool",
+    "HLK_DELAY_TIME": "u16",
+    "HLK_SWITCH_ON_DELAY": "u16",
+    "ACTIVE_SCENE_NUMBER": "scene",
+    "NIGHTMATIC_MODE": "u8",
+    "CONSTANT_LIGHT_HYSTERESIS": "u16",
+    "DC_MODE_LIGHTNESS": "lightness",
+    "OWN_GROUP_ADDRESS": "raw",
+    "SUB_SCENE_1_LIGHTNESS": "lightness",
+    "SUB_SCENE_2_LIGHTNESS": "lightness",
+    "SUB_SCENE_3_LIGHTNESS": "lightness",
+    "SUB_SCENE_4_LIGHTNESS": "lightness",
+    "SUB_SCENE_5_LIGHTNESS": "lightness",
+    "DEFAULT_SCENE_NUMBER": "scene",
+    "CL_DIM_MODE": "u8",
+    "NM_DIM_MINIMUM_LIGHTNESS": "lightness",
+    "NM_DIM_LUX_THRESHOLD_MIN": "u16",
+    "NM_DIM_LUX_THRESHOLD_MAX": "u16",
+    "FOLDING_DOOR1_SCENE_NUMBER": "scene",
+    "FOLDING_DOOR1_LIGHT_SENSOR_ADDRESS": "raw",
+    "FOLDING_DOOR1_MEMBER_ADDRESSES": "raw",
+    "FOLDING_DOOR2_SCENE_NUMBER": "scene",
+    "FOLDING_DOOR2_LIGHT_SENSOR_ADDRESS": "raw",
+    "FOLDING_DOOR2_MEMBER_ADDRESSES": "raw",
+    "FOLDING_DOOR3_SCENE_NUMBER": "scene",
+    "FOLDING_DOOR3_LIGHT_SENSOR_ADDRESS": "raw",
+    "FOLDING_DOOR3_MEMBER_ADDRESSES": "raw",
+    "LABORATORY_FUNCTION": "bool",
+    "SMOOTH_SCENE_TRANSITION": "bool",
+    "MANUAL_OVERWRITE_PROTECT_ENABLE": "bool",
+    "GLOBAL_MAX_LIGHTNESS": "lightness",
+    "GLOBAL_MIN_LIGHTNESS": "lightness",
+    "PB_IGNORE_MIN_MAX_LIGHTNESS_ENABLE": "bool",
+}
+
+# Properties worth showing by default; everything else in LIGHT_PROPERTIES
+# is still fully accessible but starts disabled (entity_registry_enabled_
+# default=False) so a lamp's entity list isn't dominated by KNX/folding-door/
+# laboratory-mode settings most installations never touch.
+LIGHT_PROPERTIES_DEFAULT_ENABLED = {
+    "ECO_MODE_ENABLE",
+    "GLOBAL_MAX_LIGHTNESS",
+    "GLOBAL_MIN_LIGHTNESS",
+    "NIGHTMATIC_MODE",
+}
+
+# STEINEL Sensor Extension (vendor model 0x1003) data property IDs, see
+# STEINEL_BLE_KOMMUNIKATION.md section 4.2. IDs below 0xFF00 are official
+# Bluetooth SIG Device Property IDs with SIG-standardised characteristic
+# encodings (see parse_sensor_value); the 0xFFxx range is STEINEL-vendor and
+# has no published encoding, so those are only exposed as raw hex.
+SENSOR_PROPERTIES: dict[str, int] = {
+    "PRESENT_AMBIENT_RELATIVE_HUMIDITY": 0x0076,
+    "AIR_PRESSURE": 0x0082,
+    "VOC": 0x0078,
+    "CO2": 0x0077,
+    "SMOKE": 0xFFFA,
+    "NOISE": 0x0079,
+    "MOTION_SENSED": 0x0042,
+    "PEOPLE_COUNT": 0x004C,
+    "PRESENCE_DETECTED": 0x004D,
+    "TIME_SINCE_MOTION_SENSED": 0x0068,
+    "TIME_SINCE_PRESENCE_DETECTED": 0x0069,
+    "PRESENT_AMBIENT_TEMPERATURE": 0x004F,
+    "PRECISE_PRESENT_AMBIENT_TEMPERATURE": 0x0075,
+    "DEW_POINT": 0x0087,
+    "INDOOR_AIR_QUALITY": 0xFFF2,
+    "RISK": 0xFFF0,
+    "RGB_LED": 0xFFEF,
+    "ALARM": 0xFFEE,
+    "STALE_AIR": 0xFFE8,
+    "COMFORT_ZONE": 0xFFE7,
+    "PIXEL_POSITION": 0xFFE2,
+    "DOOR_COUNT": 0xFFDA,
+}
+
+SENSOR_SETTINGS: dict[str, int] = {
+    "SENSOR_HW_ENABLE": 0xFFFF,
+    "DETECTION_DELAY": 0xFFF8,
+    "PEOPLE_COUNT_THRESHOLD": 0xFFF7,
+    "SENSITIVITY_MODE": 0xFFF6,
+    "RANGE4": 0xFFF5,
+    "PRESENCE_DETECTION_MODE": 0xFFF4,
+    "ACTIVE_ZONES": 0xFFF3,
+    "RANGE5": 0xFFF1,
+    "NOTIFICATION_TYPE": 0xFFED,
+    "INSTALLATION_TYPE": 0xFFEC,
+    "TEMPERATURE_OFFSET": 0xFFEB,
+    "TRUE_PRESENCE": 0xFFEA,
+    "RAG_RATING_THRESHOLD": 0xFFE9,
+    "LED_PATTERN": 0xFFE6,
+    "COMFORT_ZONE_SETTING": 0xFFE5,
+    "KEEP_NOISE_MAP": 0xFFE4,
+    "DO_INIT": 0xFFE3,
+    "PIXEL_AREA_DEFINITION": 0xFFE1,
+    "SET_BY": 0xFFDB,
+    "DOOR_COUNT_RESET": 0xFFD9,
+    "DUALTECH_TRIGGER": 0xFFDE,
+    "CHANNEL": 0xFFDD,
+    "DEFAULT_RESET": 0xFFDC,
+}
+
+# SENSOR_PROPERTIES entries with a published Bluetooth SIG Device Property
+# encoding (see parse_sensor_value) - the ones worth polling and exposing as
+# typed sensor/binary_sensor entities. The remaining, 0xFFxx STEINEL-vendor
+# entries have no published encoding and are only meaningful as raw hex.
+STANDARD_SENSOR_PROPERTIES: tuple[str, ...] = (
+    "PRESENCE_DETECTED",
+    "MOTION_SENSED",
+    "PEOPLE_COUNT",
+    "TIME_SINCE_MOTION_SENSED",
+    "TIME_SINCE_PRESENCE_DETECTED",
+    "PRESENT_AMBIENT_TEMPERATURE",
+    "PRECISE_PRESENT_AMBIENT_TEMPERATURE",
+    "PRESENT_AMBIENT_RELATIVE_HUMIDITY",
+    "CO2",
+    "VOC",
+    "NOISE",
+    "AIR_PRESSURE",
+    "DEW_POINT",
+)
+
+
+def humanize_property_name(name: str) -> str:
+    """"ECO_MODE_ENABLE" -> "Eco Mode Enable", for use as an entity name."""
+    return name.replace("_", " ").title()
+
+
+@dataclasses.dataclass(frozen=True)
+class SensorValue:
+    raw: bytes
+    value: float | int | bool | None
+    unit: str | None
+
+
+def parse_sensor_value(property_name: str, data: bytes) -> SensorValue:
+    """Best-effort decode using the official Bluetooth SIG Device Property
+    characteristic encodings for the standard (non-0xFFxx) property IDs.
+    Unknown/vendor properties, or a payload that doesn't match the expected
+    width, are returned with value=None (raw hex is always available)."""
+
+    def u(n: int) -> int | None:
+        return int.from_bytes(data[:n], "little") if len(data) >= n else None
+
+    def s(n: int) -> int | None:
+        return int.from_bytes(data[:n], "little", signed=True) if len(data) >= n else None
+
+    if property_name == "PRESENCE_DETECTED":
+        v = u(1)
+        return SensorValue(data, None if v is None else bool(v), None)
+    if property_name == "MOTION_SENSED":
+        v = u(1)
+        return SensorValue(data, v, "%")
+    if property_name in ("PRESENT_AMBIENT_TEMPERATURE", "DEW_POINT"):
+        v = s(1)
+        return SensorValue(data, None if v is None or v == 0x7F else v * 0.5, "°C")
+    if property_name == "PRECISE_PRESENT_AMBIENT_TEMPERATURE":
+        v = s(2)
+        return SensorValue(data, None if v is None else v * 0.01, "°C")
+    if property_name == "PRESENT_AMBIENT_RELATIVE_HUMIDITY":
+        v = u(2)
+        return SensorValue(data, None if v is None else v * 0.01, "%")
+    if property_name in ("CO2", "VOC"):
+        v = u(2)
+        return SensorValue(data, v, "ppm")
+    if property_name == "NOISE":
+        v = u(1)
+        return SensorValue(data, v, "dB")
+    if property_name == "AIR_PRESSURE":
+        v = u(4)
+        return SensorValue(data, None if v is None else v * 0.1, "Pa")
+    if property_name == "PEOPLE_COUNT":
+        v = u(2)
+        return SensorValue(data, v, None)
+    if property_name in ("TIME_SINCE_MOTION_SENSED", "TIME_SINCE_PRESENCE_DETECTED"):
+        v = u(2)
+        return SensorValue(data, v, "s")
+    return SensorValue(data, None, None)
+
+
 def sig_opcode(opcode: int) -> bytes:
     if 0 <= opcode <= 0x7F:
         return bytes([opcode])
@@ -506,6 +791,17 @@ def config_model_app_bind(element: int, app_key_index: int, model: int) -> bytes
     if not 0 <= app_key_index <= 0xFFF:
         raise ValueError("AppKey index must be between 0 and 0xFFF")
     return OP_CONFIG_MODEL_APP_BIND + struct.pack("<HHH", element, app_key_index, model)
+
+
+def config_model_app_bind_vendor(element: int, app_key_index: int, company: int, model: int) -> bytes:
+    """Like config_model_app_bind, but for a vendor model: the Mesh spec's
+    4-octet vendor Model Identifier is Company ID followed by Model ID."""
+    checked_u16(element, "element address")
+    checked_u16(company, "company id")
+    checked_u16(model, "vendor model id")
+    if not 0 <= app_key_index <= 0xFFF:
+        raise ValueError("AppKey index must be between 0 and 0xFFF")
+    return OP_CONFIG_MODEL_APP_BIND + struct.pack("<HHHH", element, app_key_index, company, model)
 
 
 # ---------------------------------------------------------------------------

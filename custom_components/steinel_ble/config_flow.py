@@ -13,6 +13,7 @@ later step in the wizard fails and the user retries).
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import json
 import logging
@@ -41,17 +42,28 @@ from .const import (
     CONF_FIRMWARE_SHA256,
     CONF_FIRMWARE_URL,
     CONF_FIRMWARE_VERSION,
+    DEFAULT_CONNECT_TIMEOUT,
     DOMAIN,
     MESH_PROVISIONING_SERVICE,
     MESH_PROXY_SERVICE,
+    MESH_RETRY_DELAY,
     STEINEL_COMPANY_ID,
 )
 from .coordinator import SteinelMeshHub
-from .protocol import GLOBAL_RESET_DATA, GLOBAL_RESET_OPCODE, ProtocolError
+from .protocol import GLOBAL_RESET_DATA, GLOBAL_RESET_OPCODE
 
 _LOGGER = logging.getLogger(__name__)
 
 _MAC_RE = re.compile(r"^(?:[0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}$")
+
+
+def _describe_exc(exc: Exception) -> str:
+    """"" -> "TimeoutError"; "not found" -> "BleakError: not found". Several
+    of the exceptions connection failures raise (plain asyncio.TimeoutError
+    in particular) carry no message text, and an empty {error} placeholder
+    is useless for diagnosing what actually happened."""
+    text = str(exc)
+    return f"{type(exc).__name__}: {text}" if text else type(exc).__name__
 
 
 def _looks_like_steinel(info: BluetoothServiceInfoBleak) -> bool:
@@ -202,17 +214,51 @@ class _MeshSetupMixin:
                 data_schema=vol.Schema({}),
                 description_placeholders={"name": self._name or "", "address": self._address},
             )
+        # Real BLE connects over a proxy in this environment have been seen
+        # taking anywhere from instant up to 30s+ (weak RSSI around a lamp
+        # that's also seen outright connect failures - status=133/"Invalid
+        # Param" conn-parameter-update errors at the ESPHome proxy), and a
+        # short timeout here doesn't make the reset any safer, it just makes
+        # it more likely to raise a raw connection-library exception
+        # (BleakError/TimeoutError, not this integration's own ProtocolError)
+        # that would otherwise escape as an unhandled "Unknown error
+        # occurred" instead of the proper translated abort reason below. So:
+        # a generous per-attempt timeout, several retries, and catch broadly
+        # - not just ProtocolError.
+        reset_timeout = max(90.0, DEFAULT_CONNECT_TIMEOUT)
+        attempts = 5
+        last_exc: Exception | None = None
+        for attempt in range(1, attempts + 1):
+            try:
+                async with ble.DirectClient(self.hass, self._address, reset_timeout) as client:
+                    await client.command(GLOBAL_RESET_OPCODE, GLOBAL_RESET_DATA, reset_timeout)
+                    # The reset just changed which GATT service/characteristics
+                    # this address exposes (Proxy -> Provisioning); purge any
+                    # cached table for it now, while still connected, so the
+                    # reconnect for provisioning does a fresh discovery
+                    # instead of reusing the now-stale one.
+                    await client.clear_cache()
+                last_exc = None
+                break
+            except Exception as exc:  # noqa: BLE001 - any connect/GATT failure is retried the same way
+                last_exc = exc
+                if attempt < attempts:
+                    _LOGGER.debug(
+                        "Factory reset attempt %d/%d for %s failed: %s", attempt, attempts, self._address, exc
+                    )
+                    await asyncio.sleep(MESH_RETRY_DELAY)
+        if last_exc is not None:
+            _LOGGER.warning("Factory reset of %s failed: %s", self._address, _describe_exc(last_exc))
+            return self.async_abort(
+                reason="reset_failed", description_placeholders={"error": _describe_exc(last_exc)}
+            )
         try:
-            async with ble.DirectClient(self.hass, self._address, 10.0) as client:
-                await client.command(GLOBAL_RESET_OPCODE, GLOBAL_RESET_DATA, 10.0)
-        except ProtocolError as exc:
-            _LOGGER.warning("Factory reset of %s failed: %s", self._address, exc)
-            return self.async_abort(reason="reset_failed", description_placeholders={"error": str(exc)})
-        try:
-            await ble.async_wait_for_service(self.hass, {self._address}, MESH_PROVISIONING_SERVICE, 30.0)
-        except ProtocolError as exc:
-            _LOGGER.warning("%s did not re-advertise as unprovisioned after reset: %s", self._address, exc)
-            return self.async_abort(reason="reset_not_confirmed", description_placeholders={"error": str(exc)})
+            await ble.async_wait_for_service(self.hass, {self._address}, MESH_PROVISIONING_SERVICE, 90.0)
+        except Exception as exc:  # noqa: BLE001 - see above
+            _LOGGER.warning("%s did not re-advertise as unprovisioned after reset: %s", self._address, _describe_exc(exc))
+            return self.async_abort(
+                reason="reset_not_confirmed", description_placeholders={"error": _describe_exc(exc)}
+            )
         return await self.async_step_provision()
 
     @staticmethod
@@ -248,14 +294,24 @@ class _MeshSetupMixin:
             if retry_unicast is not None:
                 unicast = retry_unicast
             else:
-                unicast, _capabilities_meta = await hub.async_provision(self._address, attention=0)
+                # The default timeout budgets a single, fast local BLE connect;
+                # over a Bluetooth proxy in a poor-RF environment the initial
+                # connect alone can take 20s+ (see the reset step above), so
+                # give the whole provisioning handshake the same headroom.
+                unicast, _capabilities_meta = await hub.async_provision(
+                    self._address, attention=0, timeout=max(25.0, DEFAULT_CONNECT_TIMEOUT)
+                )
                 node = hub.network.node_for_unicast(unicast)
                 node["name"] = self._name
                 await hub.network.async_upsert_node(unicast, node)
-            capabilities = await hub.async_bind_capabilities(unicast)
-        except ProtocolError as exc:
-            _LOGGER.warning("Provisioning %s failed: %s", self._address, exc)
-            return self.async_abort(reason="provisioning_failed", description_placeholders={"error": str(exc)})
+            capabilities = await hub.async_bind_capabilities(unicast, timeout=max(25.0, DEFAULT_CONNECT_TIMEOUT))
+        except Exception as exc:  # noqa: BLE001 - a connect failure raises bleak's own exception types, not
+            # just this integration's ProtocolError; either way it must end in a clean abort, not an
+            # unhandled "Unknown error occurred" that leaves the user without a way to retry sensibly.
+            _LOGGER.warning("Provisioning %s failed: %s", self._address, _describe_exc(exc))
+            return self.async_abort(
+                reason="provisioning_failed", description_placeholders={"error": _describe_exc(exc)}
+            )
         if not capabilities.get(CAPABILITY_ONOFF):
             return self.async_abort(reason="no_light_model", description_placeholders={"name": self._name})
         return await self._async_finish(f"Added {len(hub.network.nodes)} STEINEL device(s)")
@@ -318,7 +374,7 @@ class _MeshSetupMixin:
             await network.async_upsert_node(unicast, node)
             try:
                 await hub.async_bind_capabilities(unicast)
-            except ProtocolError as exc:
+            except Exception as exc:  # noqa: BLE001 - a connect failure must not abort importing the rest
                 _LOGGER.warning(
                     "Could not (re-)confirm model bindings for imported node %s (%s): %s", key, raw_node["address"], exc
                 )

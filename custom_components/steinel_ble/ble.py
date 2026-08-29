@@ -16,6 +16,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+from collections.abc import Callable
 from typing import Any, Self
 
 from bleak.backends.device import BLEDevice
@@ -64,11 +65,34 @@ def async_ble_device(hass: HomeAssistant, address: str) -> BLEDevice:
 
 
 async def async_connect(
-    hass: HomeAssistant, address: str, name: str = "", timeout: float = DEFAULT_CONNECT_TIMEOUT
+    hass: HomeAssistant,
+    address: str,
+    name: str = "",
+    timeout: float = DEFAULT_CONNECT_TIMEOUT,
+    disconnected_callback: Callable[[BleakClientWithServiceCache], None] | None = None,
 ) -> BleakClientWithServiceCache:
+    # use_services_cache=False: a STEINEL lamp's GATT table changes with its
+    # Bluetooth Mesh role (Provisioning service before being provisioned,
+    # Proxy service after - see MeshTransport), and this integration
+    # actively drives that transition (provision, factory reset). Caching
+    # is meant for a device whose services are stable across reconnects,
+    # which isn't true here; a stale cache surfaces as
+    # BleakCharacteristicNotFoundError for a characteristic that is real,
+    # just on a service the device isn't currently exposing. Note this only
+    # controls bleak's own/BlueZ-side cache - an ESPHome Bluetooth proxy
+    # keeps its own separate GATT cache on the ESP32 itself ("Connecting v3
+    # with cache" in its logs) that this flag does not reach; if a proxy's
+    # cached table also goes stale after a reset, only that proxy device
+    # restarting clears it.
     device = async_ble_device(hass, address)
     return await establish_connection(
-        BleakClientWithServiceCache, device, name or address, max_attempts=4, timeout=timeout
+        BleakClientWithServiceCache,
+        device,
+        name or address,
+        max_attempts=4,
+        timeout=timeout,
+        use_services_cache=False,
+        disconnected_callback=disconnected_callback,
     )
 
 
@@ -110,6 +134,61 @@ async def async_wait_for_service(
         unregister()
 
 
+async def _clear_backend_cache(client: BleakClientWithServiceCache) -> None:
+    """Purge the GATT services cache for ``client``'s address.
+
+    ``BleakClientWithServiceCache.clear_cache()`` (bleak_retry_connector)
+    forwards to ``BleakClient.clear_cache()``, which the bleak version this
+    integration runs against does not implement - it silently logs a
+    warning and returns ``False``, so calling it does nothing. The actual
+    cache-clearing implementation (the local in-memory cache and, for an
+    ESPHome Bluetooth proxy that advertises the CACHE_CLEARING feature, the
+    proxy's own on-device cache too) lives on the platform backend
+    instance (``client._backend``) instead, so it has to be reached
+    directly rather than through that broken public wrapper.
+    """
+    backend_clear = getattr(getattr(client, "_backend", None), "clear_cache", None)
+    if backend_clear is None:
+        _LOGGER.info("%s: backend has no clear_cache() to call", getattr(client, "address", "?"))
+        return
+    try:
+        result = await backend_clear()
+    except Exception:
+        _LOGGER.info("%s: backend clear_cache() raised", getattr(client, "address", "?"), exc_info=True)
+    else:
+        _LOGGER.info("%s: backend clear_cache() returned %r", getattr(client, "address", "?"), result)
+
+
+async def _race_disconnect(waitable: Any, disconnected: asyncio.Event, timeout: float, address: str) -> Any:
+    """Await ``waitable`` with ``timeout``, but fail fast if ``disconnected``
+    fires first instead of blocking for the full timeout.
+
+    Some ESPHome Bluetooth proxies, under RF stress, tear a connection back
+    down moments after opening it (observed as "GetServices mid-stream,
+    restarting" followed immediately by a disconnect in the proxy's own
+    log) without that reaching bleak as a raised exception. Without this,
+    a response that will now never arrive is waited for right up to the
+    full per-call timeout - which, for this integration's generous
+    proxy-friendly timeouts, means minutes of an apparently hung UI for
+    what was actually a fast, detectable failure.
+    """
+    wait_task = asyncio.ensure_future(waitable)
+    disconnect_task = asyncio.ensure_future(disconnected.wait())
+    try:
+        done, _pending = await asyncio.wait(
+            {wait_task, disconnect_task}, timeout=timeout, return_when=asyncio.FIRST_COMPLETED
+        )
+        if wait_task in done:
+            return wait_task.result()
+        if disconnect_task in done:
+            raise ProtocolError(f"connection to {address} was lost while waiting for a response")
+        raise TimeoutError(f"timed out waiting for a response from {address}")
+    finally:
+        for task in (wait_task, disconnect_task):
+            if not task.done():
+                task.cancel()
+
+
 class DirectClient:
     """Connection to the proprietary STEINEL GATT channel (device info,
     identify, firmware update state machine, global reset)."""
@@ -123,11 +202,48 @@ class DirectClient:
         self._waiters: dict[int, asyncio.Future[DirectResponse]] = {}
         self.unsolicited: asyncio.Queue[DirectResponse] = asyncio.Queue()
         self._lock = asyncio.Lock()
+        self._disconnected = asyncio.Event()
+
+    def _on_disconnected(self, _client: BleakClientWithServiceCache) -> None:
+        _LOGGER.info("%s: disconnected_callback fired", self.address)
+        self._disconnected.set()
 
     async def __aenter__(self) -> Self:
-        self.client = await async_connect(self._hass, self.address, "steinel-direct", self.timeout)
+        self.client = await async_connect(
+            self._hass, self.address, "steinel-direct", self.timeout, disconnected_callback=self._on_disconnected
+        )
+        # A retried connect (establish_connection reuses one client instance
+        # across its own internal attempts) can fire disconnected_callback
+        # for an earlier failed attempt before finally succeeding; clear
+        # that stale signal now that we actually have a live connection.
+        self._disconnected.clear()
+        await self._ensure_fresh_services(STEINEL_RX)
         await self.client.start_notify(STEINEL_RX, self._notification)
         return self
+
+    async def _ensure_fresh_services(self, required_uuid: str) -> None:
+        """Reconnect once with a forced fresh discovery if ``required_uuid``
+        is missing from the just-connected client's services.
+
+        A missing characteristic that should exist means the connection
+        served a stale GATT table - most likely an ESPHome Bluetooth
+        proxy's own on-device cache still describing this address from
+        before its last Global Reset/provisioning state change, which
+        ``use_services_cache=False`` alone does not reach (see
+        ``async_connect``). Clearing the cache and reconnecting once
+        self-heals that without the caller needing to know it happened.
+        """
+        assert self.client is not None
+        if self.client.services.get_characteristic(required_uuid) is not None:
+            return
+        await _clear_backend_cache(self.client)
+        with contextlib.suppress(Exception):
+            await self.client.disconnect()
+        self._disconnected = asyncio.Event()
+        self.client = await async_connect(
+            self._hass, self.address, "steinel-direct", self.timeout, disconnected_callback=self._on_disconnected
+        )
+        self._disconnected.clear()
 
     async def __aexit__(self, *exc_info: object) -> None:
         if self.client is not None:
@@ -135,6 +251,18 @@ class DirectClient:
                 await self.client.stop_notify(STEINEL_RX)
             with contextlib.suppress(Exception):
                 await self.client.disconnect()
+
+    async def clear_cache(self) -> None:
+        """Purge cached GATT services for this address (local + Bluetooth
+        proxy on-device cache, if the proxy supports it) while still
+        connected. Needed after a command that changes what the device
+        exposes - e.g. Global Reset switches it from the Proxy service to
+        the Provisioning service - since establish_connection's own
+        use_services_cache=False does not stop an ESPHome proxy that
+        advertises "remote caching" from still serving its previously
+        cached GATT table for this address on the next connection."""
+        if self.client is not None:
+            await _clear_backend_cache(self.client)
 
     def _notification(self, _sender: Any, data: bytearray) -> None:
         try:
@@ -167,7 +295,10 @@ class DirectClient:
                         f"{max_size}; a larger ATT MTU is required for this command"
                     )
                 await self.client.write_gatt_char(characteristic, frame, response=False)
-                return (await asyncio.wait_for(future, timeout or self.timeout)).require_ok()
+                response: DirectResponse = await _race_disconnect(
+                    future, self._disconnected, timeout or self.timeout, self.address
+                )
+                return response.require_ok()
             finally:
                 self._waiters.pop(opcode, None)
 
@@ -186,11 +317,51 @@ class MeshTransport:
         self.client: BleakClientWithServiceCache | None = None
         self.queue: asyncio.Queue[tuple[int, bytes]] = asyncio.Queue()
         self._sar = ProxySarReceiver()
+        self._disconnected = asyncio.Event()
+
+    def _on_disconnected(self, _client: BleakClientWithServiceCache) -> None:
+        _LOGGER.info("%s: disconnected_callback fired", self.address)
+        self._disconnected.set()
 
     async def __aenter__(self) -> Self:
-        self.client = await async_connect(self._hass, self.address, "steinel-mesh", self.timeout)
+        self.client = await async_connect(
+            self._hass, self.address, "steinel-mesh", self.timeout, disconnected_callback=self._on_disconnected
+        )
+        # A retried connect (establish_connection reuses one client instance
+        # across its own internal attempts) can fire disconnected_callback
+        # for an earlier failed attempt before finally succeeding; clear
+        # that stale signal now that we actually have a live connection.
+        self._disconnected.clear()
+        await self._ensure_fresh_services()
         await self.client.start_notify(self._output_uuid, self._notification)
+        _LOGGER.info("%s: subscribed to notifications on %s", self.address, self._output_uuid)
         return self
+
+    async def _ensure_fresh_services(self) -> None:
+        """Reconnect once with a forced fresh discovery if the expected
+        Provisioning/Proxy Data Out characteristic is missing.
+
+        A STEINEL lamp switches between the Mesh Provisioning service and
+        the Mesh Proxy service as it moves in/out of a mesh (factory
+        reset, provisioning). A missing characteristic here means the
+        connection served a stale GATT table for the *other* service -
+        most likely an ESPHome Bluetooth proxy's own on-device cache
+        (``use_services_cache=False`` in ``async_connect`` only covers
+        bleak/BlueZ's side, not that). Clearing the cache and reconnecting
+        once self-heals that without the caller needing to know it
+        happened.
+        """
+        assert self.client is not None
+        if self.client.services.get_characteristic(self._output_uuid) is not None:
+            return
+        await _clear_backend_cache(self.client)
+        with contextlib.suppress(Exception):
+            await self.client.disconnect()
+        self._disconnected = asyncio.Event()
+        self.client = await async_connect(
+            self._hass, self.address, "steinel-mesh", self.timeout, disconnected_callback=self._on_disconnected
+        )
+        self._disconnected.clear()
 
     async def __aexit__(self, *exc_info: object) -> None:
         if self.client is not None:
@@ -200,6 +371,7 @@ class MeshTransport:
                 await self.client.disconnect()
 
     def _notification(self, _sender: Any, data: bytearray) -> None:
+        _LOGGER.info("%s: raw notification, %d byte(s): %s", self.address, len(data), bytes(data).hex())
         try:
             complete = self._sar.feed(bytes(data))
             if complete is not None:
@@ -214,8 +386,30 @@ class MeshTransport:
         if characteristic is None:
             raise ProtocolError(f"Mesh Data In {self._input_uuid} is missing")
         max_write = getattr(characteristic, "max_write_without_response_size", 20)
-        for segment in proxy_segments(pdu_type, pdu, max_write):
+        segments = list(proxy_segments(pdu_type, pdu, max_write))
+        _LOGGER.info(
+            "%s: sending pdu_type=%d, %d byte(s) as %d segment(s) (max_write=%d)",
+            self.address,
+            pdu_type,
+            len(pdu),
+            len(segments),
+            max_write,
+        )
+        for segment in segments:
             await self.client.write_gatt_char(characteristic, segment, response=False)
+            # Write-without-response has no flow control at the ATT layer,
+            # and this integration talks to the device through a Bluetooth
+            # proxy (an extra WiFi<->BLE relay hop) rather than a local
+            # adapter. Back-to-back writes with zero spacing were observed
+            # to reach the proxy fine but never produce any response from
+            # the device - most likely a segment silently dropped on the
+            # peripheral side because it couldn't keep up. A small gap
+            # between writes (this applies both between GATT-level SAR
+            # segments here and, since callers loop over multiple send()
+            # calls for a single Lower Transport-segmented Access message,
+            # between those too) trades a few tens of ms for reliability.
+            await asyncio.sleep(0.02)
+        _LOGGER.info("%s: send() completed without error", self.address)
 
     async def receive(self, pdu_type: int, timeout: float | None = None) -> bytes:
         deadline = asyncio.get_running_loop().time() + (self.timeout if timeout is None else timeout)
@@ -224,8 +418,10 @@ class MeshTransport:
             if remaining <= 0:
                 raise ProtocolError(f"timeout waiting for a Mesh GATT PDU of type {pdu_type}")
             try:
-                received_type, pdu = await asyncio.wait_for(self.queue.get(), remaining)
-            except asyncio.TimeoutError as exc:
+                received_type, pdu = await _race_disconnect(
+                    self.queue.get(), self._disconnected, remaining, self.address
+                )
+            except TimeoutError as exc:
                 raise ProtocolError(f"timeout waiting for a Mesh GATT PDU of type {pdu_type}") from exc
             if received_type == pdu_type:
                 return pdu

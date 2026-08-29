@@ -1,0 +1,119 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "menu_options": {
+          "pick_device": "Discover a new (factory-reset) lamp",
+          "import_mesh": "Import an existing mesh (e.g. from the steinel_ble.py CLI tool)"
+        }
+      },
+      "pick_device": {
+        "title": "Select a STEINEL device",
+        "data": {
+          "address": "Discovered device",
+          "manual_address": "...or enter a Bluetooth MAC address manually"
+        }
+      },
+      "confirm": {
+        "title": "Confirm device",
+        "description": "The lamp should be blinking now (identify). Give it a name and confirm to add {name} ({address}) to your STEINEL mesh.",
+        "data": {
+          "name": "Name"
+        }
+      },
+      "import_mesh": {
+        "title": "Import an existing mesh",
+        "description": "Paste the JSON content of a mesh configuration file produced by steinel_ble.py (for example state/mesh.json). Its NetKey/AppKey and any already-provisioned nodes will be imported; nodes need to be reachable once so their light models can be (re-)confirmed.",
+        "data": {
+          "mesh_json": "Mesh JSON"
+        }
+      }
+    },
+    "error": {
+      "invalid_address": "That does not look like a Bluetooth MAC address (AA:BB:CC:DD:EE:FF).",
+      "no_devices_found": "No STEINEL devices are currently visible; enter the address manually if you know it.",
+      "invalid_mesh_json": "Could not parse that as a STEINEL mesh configuration: {error}"
+    },
+    "abort": {
+      "single_instance_allowed": "Only one STEINEL mesh hub is needed; add further lamps via the integration's options (\"Add device\").",
+      "already_configured": "This device is already configured.",
+      "already_provisioned_elsewhere": "{name} ({address}) already belongs to a different Bluetooth Mesh network (for example the STEINEL Connect app). It must be factory-reset before Home Assistant can provision it, or import that mesh's keys instead.",
+      "cannot_connect": "Could not connect to {address} to determine its provisioning state. Make sure it is powered and in range of a Bluetooth adapter or proxy.",
+      "provisioning_failed": "Provisioning failed: {error}",
+      "no_light_model": "{name} was added to the mesh, but no supported light model (Generic OnOff) could be bound - it will not be usable as a light.",
+      "mesh_already_configured": "A different mesh network is already configured; importing would mix two networks' keys. Remove the existing integration first if you really want to replace it.",
+      "no_nodes_imported": "No new nodes were found in that file."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "menu_options": {
+          "pick_device": "Add a device",
+          "import_mesh": "Import an existing mesh",
+          "configure_firmware": "Configure a firmware update source"
+        }
+      },
+      "pick_device": {
+        "title": "Select a STEINEL device",
+        "data": {
+          "address": "Discovered device",
+          "manual_address": "...or enter a Bluetooth MAC address manually"
+        }
+      },
+      "confirm": {
+        "title": "Confirm device",
+        "description": "The lamp should be blinking now (identify). Give it a name and confirm to add {name} ({address}) to your STEINEL mesh.",
+        "data": {
+          "name": "Name"
+        }
+      },
+      "import_mesh": {
+        "title": "Import an existing mesh",
+        "description": "Paste the JSON content of a mesh configuration file produced by steinel_ble.py.",
+        "data": {
+          "mesh_json": "Mesh JSON"
+        }
+      },
+      "configure_firmware": {
+        "title": "Firmware update source",
+        "description": "STEINEL's online catalog cannot currently be resolved automatically (see update.py), so point this lamp at a signed .sfu/.zip Nordic DFU package yourself - a direct https:// download URL or a local file path - together with the version/hardware/product id it is for. Leave the URL empty to disable update checks for this lamp.",
+        "data": {
+          "firmware_url": "Firmware package URL or local path",
+          "firmware_version": "Expected version (MAJOR.MINOR.PATCH)",
+          "firmware_hardware": "Expected hardware revision",
+          "firmware_product_id": "Expected product id (decimal, from the scan result)",
+          "firmware_sha256": "Expected SHA-256 (optional but recommended)"
+        }
+      }
+    },
+    "error": {
+      "invalid_address": "That does not look like a Bluetooth MAC address (AA:BB:CC:DD:EE:FF).",
+      "no_devices_found": "No new STEINEL devices are currently visible; enter the address manually if you know it.",
+      "invalid_mesh_json": "Could not parse that as a STEINEL mesh configuration: {error}"
+    },
+    "abort": {
+      "already_provisioned_elsewhere": "{name} ({address}) already belongs to a different Bluetooth Mesh network. It must be factory-reset before Home Assistant can provision it.",
+      "cannot_connect": "Could not connect to {address} to determine its provisioning state.",
+      "provisioning_failed": "Provisioning failed: {error}",
+      "no_light_model": "{name} was added to the mesh, but no supported light model (Generic OnOff) could be bound.",
+      "mesh_already_configured": "This mesh already has different keys configured; importing would mix two networks.",
+      "no_nodes_imported": "No new nodes were found in that file."
+    }
+  },
+  "entity": {
+    "button": {
+      "identify": {
+        "name": "Identify"
+      },
+      "factory_reset": {
+        "name": "Factory reset"
+      }
+    },
+    "update": {
+      "firmware": {
+        "name": "Firmware"
+      }
+    }
+  }
+}

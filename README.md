@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="custom_components/steinel_ble/brand/logo.png" alt="STEINEL" height="80">
+  <img src="https://raw.githubusercontent.com/matze19999/steinel-ble/main/custom_components/steinel_ble/brand/logo.png" alt="STEINEL" height="80">
 </p>
 
 <h1 align="center">STEINEL Connect BLE for Home Assistant</h1>
@@ -7,7 +7,7 @@
 <p align="center">
   <a href="https://github.com/hacs/integration"><img src="https://img.shields.io/badge/HACS-Custom-41BDF5.svg" alt="HACS Custom"></a>
   <a href="https://github.com/matze19999/steinel-ble/actions/workflows/validate.yml"><img src="https://github.com/matze19999/steinel-ble/actions/workflows/validate.yml/badge.svg" alt="Validate"></a>
-  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="MIT License"></a>
+  <a href="https://github.com/matze19999/steinel-ble/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="MIT License"></a>
 </p>
 
 A Home Assistant custom integration for **STEINEL Connect** Bluetooth Mesh
@@ -169,4 +169,4 @@ are included in this repository; the protocol implementation is this
 project's own, independent work based on reverse-engineering for
 interoperability purposes.
 
-Licensed under the [MIT License](LICENSE).
+Licensed under the [MIT License](https://github.com/matze19999/steinel-ble/blob/main/LICENSE).

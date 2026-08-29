@@ -56,11 +56,26 @@ any official STEINEL SDK - see [Legal](#legal) below.
 
 ## Installation
 
+This repository is **not** (yet) in the default HACS store, but it can be
+added directly as a HACS *custom repository* - no separate download needed.
+
 ### HACS (recommended)
 
-1. HACS → the "⋮" menu → *Custom repositories*.
-2. Add `https://github.com/matze19999/steinel-ble` as an *Integration*.
-3. Install "STEINEL Connect BLE", then restart Home Assistant.
+[![Add to HACS](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=matze19999&repository=steinel-ble&category=integration)
+
+Click the badge above (requires [HACS](https://hacs.xyz) to already be
+installed and the *My Home Assistant* integration enabled), or add it by
+hand:
+
+1. HACS → the "⋮" menu (top right) → *Custom repositories*.
+2. Repository: `https://github.com/matze19999/steinel-ble`, type:
+   *Integration* → *Add*.
+3. Find "STEINEL Connect BLE" in HACS and install it.
+4. Restart Home Assistant.
+
+The integration then shows up under *Settings → Devices & services → Add
+integration → STEINEL Connect BLE* (or is offered automatically once a
+STEINEL lamp is discovered).
 
 ### Manual
 

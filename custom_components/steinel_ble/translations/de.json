@@ -49,5 +49,8 @@
       "description": "Schließe die STEINEL-App und alle anderen Bluetooth-Clients vollständig. Trenne die Lampe kurz vom Strom, schalte sie wieder ein und lade den Integrationseintrag sofort neu. Der Reset wird nur während eines kurzen Zeitfensters nach dem Einschalten akzeptiert."
     }
   },
-  "entity": {"light": {"light": {"name": "Licht"}}}
+  "entity": {
+    "device_tracker": {"reachability": {"name": "Erreichbarkeit"}},
+    "light": {"light": {"name": "Licht"}}
+  }
 }

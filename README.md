@@ -56,6 +56,9 @@ SDK. See [Legal](#legal).
   so an ESPHome proxy such as the XIAO ESP32S3 can provide the BLE connection.
 - **Acknowledged state updates** - acknowledged Bluetooth Mesh status messages
   update the entity state in Home Assistant.
+- **Reachability tracking** - every configured device has a Bluetooth
+  `device_tracker` that reports `home` while its Mesh Proxy connection is
+  usable and `not_home` while it is unreachable or reconnecting.
 - **Diagnostics and configurable behaviour** - credential-free diagnostics,
   background reconnection, command timeouts, retry counts, sensor polling and
   brightness restoration can be managed from the integration options.

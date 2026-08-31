@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.2.1
+
+- Added a Bluetooth `device_tracker` entity for every configured STEINEL
+  device. It reports `home` while its Mesh Proxy connection is usable and
+  `not_home` while the device is unreachable or reconnecting.
+
 ## 0.2.0
 
 - Added automatic background reconnection with exponential backoff.

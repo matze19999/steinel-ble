@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 DOMAIN = "steinel_ble"
-PLATFORMS = ["light", "sensor", "binary_sensor"]
+PLATFORMS = ["light", "sensor", "binary_sensor", "device_tracker"]
 
 CONF_CONNECT_ATTEMPTS = "connect_attempts"
 CONF_COMMAND_TIMEOUT = "command_timeout"

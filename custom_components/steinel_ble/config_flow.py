@@ -22,7 +22,9 @@ from .const import (
     CONF_BRIGHTNESS_DELAY,
     CONF_COMMAND_TIMEOUT,
     CONF_CONNECT_ATTEMPTS,
+    CONF_DISCONNECT_WHEN_IDLE,
     CONF_ELEMENTS,
+    CONF_IDLE_DISCONNECT_DELAY,
     CONF_MODEL_SCHEMA_VERSION,
     CONF_PRODUCT_ID,
     CONF_PROVISION_ATTEMPTS,
@@ -33,6 +35,8 @@ from .const import (
     DEFAULT_BRIGHTNESS_DELAY,
     DEFAULT_COMMAND_TIMEOUT,
     DEFAULT_CONNECT_ATTEMPTS,
+    DEFAULT_DISCONNECT_WHEN_IDLE,
+    DEFAULT_IDLE_DISCONNECT_DELAY,
     DEFAULT_PROVISION_ATTEMPTS,
     DEFAULT_RESTORE_BRIGHTNESS,
     DEFAULT_SENSOR_INTERVAL,
@@ -258,6 +262,20 @@ class SteinelOptionsFlow(OptionsFlow):
                             CONF_BRIGHTNESS_DELAY, DEFAULT_BRIGHTNESS_DELAY
                         ),
                     ): number(0, 2, 0.05),
+                    vol.Required(
+                        CONF_DISCONNECT_WHEN_IDLE,
+                        default=options.get(
+                            CONF_DISCONNECT_WHEN_IDLE,
+                            DEFAULT_DISCONNECT_WHEN_IDLE,
+                        ),
+                    ): BooleanSelector(),
+                    vol.Required(
+                        CONF_IDLE_DISCONNECT_DELAY,
+                        default=options.get(
+                            CONF_IDLE_DISCONNECT_DELAY,
+                            DEFAULT_IDLE_DISCONNECT_DELAY,
+                        ),
+                    ): number(10, 600, 5),
                     vol.Required("rescan_models", default=False): BooleanSelector(),
                 }
             ),

@@ -38,6 +38,8 @@
           "sensor_interval": "Sensor polling interval (seconds)",
           "restore_brightness": "Restore remembered brightness after turning on",
           "brightness_delay": "Brightness restore delay (seconds)",
+          "disconnect_when_idle": "Release the BLE connection when idle",
+          "idle_disconnect_delay": "Idle time before disconnecting (seconds)",
           "rescan_models": "Rescan models and sensor properties"
         }
       }

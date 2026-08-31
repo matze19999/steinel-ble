@@ -23,19 +23,28 @@ def _load_package():
         sys.modules[name] = module
         spec.loader.exec_module(module)
     return (
+        sys.modules[f"{package_name}.const"],
         sys.modules[f"{package_name}.gatt"],
         sys.modules[f"{package_name}.mesh"],
         sys.modules[f"{package_name}.provisioning"],
     )
 
 
-gatt, mesh, provisioning = _load_package()
+const, gatt, mesh, provisioning = _load_package()
 
 
 def test_opcode_round_trip() -> None:
     for opcode in (0x12, 0x8202, 0xD06305):
         encoded = mesh.encode_opcode(opcode) + b"payload"
         assert mesh.decode_opcode(encoded) == (opcode, b"payload")
+
+
+def test_initial_state_get_opcodes() -> None:
+    """Initial state retrieval uses the assigned Bluetooth Mesh opcodes."""
+    assert const.OP_GENERIC_ONOFF_GET == 0x8201
+    assert const.OP_LIGHT_LIGHTNESS_GET == 0x824B
+    assert const.OP_LIGHT_CTL_GET == 0x825D
+    assert const.OP_LIGHT_HSL_GET == 0x826D
 
 
 def test_composition_data_multiple_elements() -> None:

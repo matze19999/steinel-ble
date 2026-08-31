@@ -33,6 +33,11 @@ async def async_get_config_entry_diagnostics(
         "options": dict(entry.options),
         "runtime": {
             "available": coordinator.available,
+            "gatt_connected": bool(
+                coordinator.transport
+                and coordinator.transport.client
+                and coordinator.transport.client.is_connected
+            ),
             "last_connected": coordinator.last_connected,
             "last_error": coordinator.last_error,
             "reconnect_count": coordinator.reconnect_count,

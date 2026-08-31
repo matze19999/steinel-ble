@@ -38,6 +38,8 @@
           "sensor_interval": "Sensor-Abfrageintervall (Sekunden)",
           "restore_brightness": "Gespeicherte Helligkeit nach Einschalten wiederherstellen",
           "brightness_delay": "Verzögerung der Helligkeitswiederherstellung (Sekunden)",
+          "disconnect_when_idle": "BLE-Verbindung bei Inaktivität freigeben",
+          "idle_disconnect_delay": "Leerlaufzeit bis zum Trennen (Sekunden)",
           "rescan_models": "Modelle und Sensoreigenschaften neu erkennen"
         }
       }

@@ -28,8 +28,10 @@ from .const import (
     CONF_COMMAND_TIMEOUT,
     CONF_CONNECT_ATTEMPTS,
     CONF_DEVICE_KEY,
+    CONF_DISCONNECT_WHEN_IDLE,
     CONF_ELEMENT_COUNT,
     CONF_ELEMENTS,
+    CONF_IDLE_DISCONNECT_DELAY,
     CONF_IV_INDEX,
     CONF_MODEL_SCHEMA_VERSION,
     CONF_NET_KEY,
@@ -44,6 +46,8 @@ from .const import (
     DEFAULT_BRIGHTNESS_DELAY,
     DEFAULT_COMMAND_TIMEOUT,
     DEFAULT_CONNECT_ATTEMPTS,
+    DEFAULT_DISCONNECT_WHEN_IDLE,
+    DEFAULT_IDLE_DISCONNECT_DELAY,
     DEFAULT_PROVISION_ATTEMPTS,
     DEFAULT_RESTORE_BRIGHTNESS,
     DEFAULT_UNICAST_ADDRESS,
@@ -54,18 +58,26 @@ from .const import (
     MESH_PROXY_DATA_IN,
     MESH_PROXY_DATA_OUT,
     MESH_PROXY_SERVICE,
+    MODEL_GENERIC_ONOFF_SERVER,
+    MODEL_LIGHT_CTL_SERVER,
+    MODEL_LIGHT_HSL_SERVER,
+    MODEL_LIGHT_LIGHTNESS_SERVER,
     MODEL_SCHEMA_VERSION,
     MODEL_STEINEL_SENSOR_EXTENSION,
     NODE_COMPLETE,
     NODE_PENDING,
+    OP_GENERIC_ONOFF_GET,
     OP_GENERIC_ONOFF_SET,
     OP_GENERIC_ONOFF_STATUS,
+    OP_LIGHT_CTL_GET,
     OP_LIGHT_CTL_SET,
     OP_LIGHT_CTL_STATUS,
+    OP_LIGHT_HSL_GET,
     OP_LIGHT_HSL_SET,
     OP_LIGHT_HSL_STATUS,
     OP_LIGHT_LC_ONOFF_SET,
     OP_LIGHT_LC_ONOFF_STATUS,
+    OP_LIGHT_LIGHTNESS_GET,
     OP_LIGHT_LIGHTNESS_SET,
     OP_LIGHT_LIGHTNESS_STATUS,
     STEINEL_COMPANY_ID,
@@ -102,6 +114,8 @@ class SteinelCoordinator:
         self._connect_lock = asyncio.Lock()
         self._disconnect_event = asyncio.Event()
         self._reconnect_task: asyncio.Task[None] | None = None
+        self._idle_task: asyncio.Task[None] | None = None
+        self._suppress_disconnect = False
         self._shutting_down = False
         self.reconnect_count = 0
         self.last_connected: datetime | None = None
@@ -158,9 +172,11 @@ class SteinelCoordinator:
                 )
             if CONF_SENSOR_PROPERTIES not in self.entry.data:
                 await self._async_detect_sensor_properties()
+            await self._async_refresh_light_states()
             self.available = True
             self.last_connected = datetime.now(UTC)
             self._start_reconnect_monitor()
+            self._arm_idle_disconnect()
         except (
             BleakError,
             TimeoutError,
@@ -180,6 +196,10 @@ class SteinelCoordinator:
             self._reconnect_task.cancel()
             await asyncio.gather(self._reconnect_task, return_exceptions=True)
             self._reconnect_task = None
+        if self._idle_task:
+            self._idle_task.cancel()
+            await asyncio.gather(self._idle_task, return_exceptions=True)
+            self._idle_task = None
         if self.transport:
             await self.transport.disconnect()
         self.transport = None
@@ -193,7 +213,7 @@ class SteinelCoordinator:
     @callback
     def _transport_disconnected(self) -> None:
         """Mark the node unavailable and wake the reconnect monitor."""
-        if self._shutting_down:
+        if self._shutting_down or self._suppress_disconnect:
             return
         self.available = False
         self._disconnect_event.set()
@@ -230,6 +250,38 @@ class SteinelCoordinator:
                 except Exception as err:  # keep retrying while the entry is loaded
                     self.last_error = str(err)
                     delay = min(delay * 2, 60)
+
+    def _cancel_idle_disconnect(self) -> None:
+        if self._idle_task:
+            self._idle_task.cancel()
+            self._idle_task = None
+
+    def _arm_idle_disconnect(self) -> None:
+        """Release the BLE slot after inactivity when explicitly enabled."""
+        self._cancel_idle_disconnect()
+        if not self._option(CONF_DISCONNECT_WHEN_IDLE, DEFAULT_DISCONNECT_WHEN_IDLE):
+            return
+        self._idle_task = self.hass.async_create_task(
+            self._async_idle_disconnect(),
+            f"steinel_ble idle disconnect {self.address}",
+        )
+
+    async def _async_idle_disconnect(self) -> None:
+        await asyncio.sleep(
+            float(
+                self._option(CONF_IDLE_DISCONNECT_DELAY, DEFAULT_IDLE_DISCONNECT_DELAY)
+            )
+        )
+        async with self._connect_lock:
+            if not self.transport:
+                return
+            self._suppress_disconnect = True
+            try:
+                await self.transport.disconnect()
+            finally:
+                self._suppress_disconnect = False
+            self.transport = None
+            self.node = None
 
     async def _async_ble_device(self):
         device = bluetooth.async_ble_device_from_address(
@@ -447,6 +499,54 @@ class SteinelCoordinator:
         self.elements = await self.node.configure(
             self.entry.data.get(CONF_ELEMENT_COUNT, 1)
         )
+        self._update_entry(
+            {
+                CONF_ELEMENTS: self._serialize_elements(self.elements),
+                CONF_MODEL_SCHEMA_VERSION: MODEL_SCHEMA_VERSION,
+                CONF_NODE_STATE: NODE_COMPLETE,
+            }
+        )
+
+    async def _async_refresh_light_states(self) -> None:
+        """Best-effort initial state queries for every exposed light element."""
+        if self.node is None:
+            return
+        primary = self.entry.data[CONF_UNICAST_ADDRESS]
+        for element in self.elements:
+            is_light = (
+                element.address == primary
+                and MODEL_GENERIC_ONOFF_SERVER in element.sig_models
+            ) or bool(
+                element.sig_models
+                & {
+                    MODEL_LIGHT_LIGHTNESS_SERVER,
+                    MODEL_LIGHT_CTL_SERVER,
+                    MODEL_LIGHT_HSL_SERVER,
+                }
+            )
+            if not is_light:
+                continue
+            queries = []
+            if MODEL_GENERIC_ONOFF_SERVER in element.sig_models:
+                queries.append((OP_GENERIC_ONOFF_GET, OP_GENERIC_ONOFF_STATUS))
+            if MODEL_LIGHT_LIGHTNESS_SERVER in element.sig_models:
+                queries.append((OP_LIGHT_LIGHTNESS_GET, OP_LIGHT_LIGHTNESS_STATUS))
+            if MODEL_LIGHT_CTL_SERVER in element.sig_models:
+                queries.append((OP_LIGHT_CTL_GET, OP_LIGHT_CTL_STATUS))
+            if MODEL_LIGHT_HSL_SERVER in element.sig_models:
+                queries.append((OP_LIGHT_HSL_GET, OP_LIGHT_HSL_STATUS))
+            for opcode, response in queries:
+                try:
+                    await self.node.request(
+                        element.address, opcode, b"", response, timeout=5
+                    )
+                except Exception:
+                    _LOGGER.debug(
+                        "Initial state query 0x%04X failed for element 0x%04X",
+                        opcode,
+                        element.address,
+                        exc_info=True,
+                    )
 
     async def _async_detect_sensor_properties(self) -> None:
         """Probe vendor sensor properties once and persist only valid replies."""
@@ -469,16 +569,10 @@ class SteinelCoordinator:
                     names.append(name)
             detected[str(element.address)] = names
         self._update_entry({CONF_SENSOR_PROPERTIES: detected})
-        self._update_entry(
-            {
-                CONF_ELEMENTS: self._serialize_elements(self.elements),
-                CONF_MODEL_SCHEMA_VERSION: MODEL_SCHEMA_VERSION,
-                CONF_NODE_STATE: NODE_COMPLETE,
-            }
-        )
 
     async def async_ensure_connected(self) -> MeshNode:
         """Reconnect the proxy before a command if necessary."""
+        self._cancel_idle_disconnect()
         async with self._connect_lock:
             if (
                 self.transport
@@ -554,6 +648,7 @@ class SteinelCoordinator:
             self.available = False
             raise
         finally:
+            self._arm_idle_disconnect()
             self._notify()
 
     async def async_set_ctl(
@@ -582,6 +677,7 @@ class SteinelCoordinator:
             self.available = False
             raise
         finally:
+            self._arm_idle_disconnect()
             self._notify()
 
     async def async_set_hsl(
@@ -612,21 +708,25 @@ class SteinelCoordinator:
             self.available = False
             raise
         finally:
+            self._arm_idle_disconnect()
             self._notify()
 
     async def async_get_sensor(
         self, address: int, property_id: int, timeout: float | None = None
     ) -> bytes:
         """Read one property from a Steinel Sensor Extension server."""
-        node = await self.async_ensure_connected()
-        _src, _opcode, parameters = await node.request_vendor(
-            address,
-            0xD0,
-            property_id.to_bytes(2, "little"),
-            timeout=timeout
-            or float(self._option(CONF_COMMAND_TIMEOUT, DEFAULT_COMMAND_TIMEOUT)),
-        )
-        return parameters
+        try:
+            node = await self.async_ensure_connected()
+            _src, _opcode, parameters = await node.request_vendor(
+                address,
+                0xD0,
+                property_id.to_bytes(2, "little"),
+                timeout=timeout
+                or float(self._option(CONF_COMMAND_TIMEOUT, DEFAULT_COMMAND_TIMEOUT)),
+            )
+            return parameters
+        finally:
+            self._arm_idle_disconnect()
 
     @callback
     def _sequence_changed(self, sequence: int) -> None:

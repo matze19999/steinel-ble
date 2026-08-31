@@ -56,6 +56,9 @@ SDK. See [Legal](#legal).
   so an ESPHome proxy such as the XIAO ESP32S3 can provide the BLE connection.
 - **Acknowledged state updates** - acknowledged Bluetooth Mesh status messages
   update the entity state in Home Assistant.
+- **Initial state retrieval** - after connecting, the integration queries the
+  on/off, lightness, CTL and HSL states supported by the element, avoiding an
+  `unknown` light state when the device responds.
 - **Reachability tracking** - every configured device has a Bluetooth
   `device_tracker` that reports `home` while its Mesh Proxy connection is
   usable and `not_home` while it is unreachable or reconnecting.
@@ -146,11 +149,14 @@ the device and choose *Configure* to adjust:
 - the acknowledged Mesh command timeout;
 - the sensor polling interval;
 - remembered-brightness restoration and its delay; and
+- optional release of an idle BLE connection and the idle delay; and
 - a one-time rescan of Composition Data and sensor properties.
 
-Changing an option reloads only that device. A dropped proxy connection is
-handled in the background with exponential backoff and does not require a
-manual integration reload.
+Changing an option reloads only that device. Persistent BLE connections remain
+the default and provide the fastest response. Enabling idle disconnect frees a
+proxy connection slot after the configured period, but the next command must
+first reconnect and therefore responds more slowly. Unexpected connection
+losses are handled in the background with exponential backoff.
 
 Home Assistant's device diagnostics download includes model composition,
 detected sensor properties, connection state, reconnect count, Bluetooth

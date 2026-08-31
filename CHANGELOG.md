@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.3.0
+
+- Query on/off, lightness, colour temperature and HSL state immediately after
+  connecting so light entities no longer start as `unknown` when the device
+  answers its supported model status requests.
+- Added an optional idle-disconnect mode that releases scarce Bluetooth proxy
+  slots after a configurable delay. Persistent connections remain the default
+  for the fastest command response.
+
 ## 0.2.2
 
 - Use a registry-backed tracker entity so reachability appears directly on the

@@ -71,11 +71,27 @@ class Provisioner:
         unicast_address: int,
         static_oob: bytes | None,
         persist_pending: PersistPending,
+        invite_attempts: int = 3,
+        ready_delay: float = 0.5,
     ) -> ProvisioningResult:
         """Provision the connected device and return its Device Key."""
         invite = b"\x00"
-        await self._send(0x00, invite)
-        capabilities = await self._receive(0x01)
+        await asyncio.sleep(ready_delay)
+        last_error: ProvisioningError | None = None
+        for attempt in range(invite_attempts):
+            await self._send(0x00, invite)
+            try:
+                capabilities = await self._receive(0x01, timeout=7)
+                break
+            except ProvisioningError as err:
+                last_error = err
+                if attempt + 1 < invite_attempts:
+                    await asyncio.sleep(0.75)
+        else:
+            raise ProvisioningError(
+                f"Device did not answer Provisioning Invite after "
+                f"{invite_attempts} attempts"
+            ) from last_error
         if len(capabilities) != 11:
             raise ProvisioningError("Invalid Provisioning Capabilities length")
         elements = capabilities[0]

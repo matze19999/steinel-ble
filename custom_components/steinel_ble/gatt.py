@@ -12,6 +12,7 @@ from bleak_retry_connector import BleakClientWithServiceCache, establish_connect
 _LOGGER = logging.getLogger(__name__)
 
 PDUHandler = Callable[[int, bytes], Awaitable[None]]
+DisconnectHandler = Callable[[], None]
 
 
 class MeshGattTransport:
@@ -24,12 +25,14 @@ class MeshGattTransport:
         data_in: str,
         data_out: str,
         handler: PDUHandler,
+        disconnected: DisconnectHandler | None = None,
     ) -> None:
         self.device = device
         self.name = name
         self.data_in = data_in
         self.data_out = data_out
         self.handler = handler
+        self.disconnected = disconnected
         self.client: BleakClientWithServiceCache | None = None
         self._rx_type: int | None = None
         self._rx = bytearray()
@@ -43,6 +46,10 @@ class MeshGattTransport:
             self.name,
             max_attempts=3,
         )
+        if self.disconnected:
+            self.client.set_disconnected_callback(
+                lambda _client: self.disconnected and self.disconnected()
+            )
         if subscribe:
             await self.subscribe()
 

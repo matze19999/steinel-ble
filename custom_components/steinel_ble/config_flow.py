@@ -7,13 +7,35 @@ from typing import Any
 
 import voluptuous as vol
 from homeassistant.components import bluetooth
-from homeassistant.config_entries import ConfigFlow, ConfigFlowResult
+from homeassistant.config_entries import ConfigFlow, ConfigFlowResult, OptionsFlow
 from homeassistant.const import CONF_ADDRESS
-from homeassistant.helpers.selector import TextSelector, TextSelectorConfig
+from homeassistant.helpers.selector import (
+    BooleanSelector,
+    NumberSelector,
+    NumberSelectorConfig,
+    NumberSelectorMode,
+    TextSelector,
+    TextSelectorConfig,
+)
 
 from .const import (
+    CONF_BRIGHTNESS_DELAY,
+    CONF_COMMAND_TIMEOUT,
+    CONF_CONNECT_ATTEMPTS,
+    CONF_ELEMENTS,
+    CONF_MODEL_SCHEMA_VERSION,
     CONF_PRODUCT_ID,
+    CONF_PROVISION_ATTEMPTS,
+    CONF_RESTORE_BRIGHTNESS,
+    CONF_SENSOR_INTERVAL,
+    CONF_SENSOR_PROPERTIES,
     CONF_STATIC_OOB,
+    DEFAULT_BRIGHTNESS_DELAY,
+    DEFAULT_COMMAND_TIMEOUT,
+    DEFAULT_CONNECT_ATTEMPTS,
+    DEFAULT_PROVISION_ATTEMPTS,
+    DEFAULT_RESTORE_BRIGHTNESS,
+    DEFAULT_SENSOR_INTERVAL,
     DOMAIN,
     MESH_PROXY_SERVICE,
     STEINEL_COMPANY_ID,
@@ -26,6 +48,11 @@ class SteinelConfigFlow(ConfigFlow, domain=DOMAIN):
     """Set up a Steinel Mesh device from Bluetooth discovery or an address."""
 
     VERSION = 1
+
+    @staticmethod
+    def async_get_options_flow(config_entry):
+        """Return the options flow for an existing node."""
+        return SteinelOptionsFlow()
 
     def __init__(self) -> None:
         self._address: str | None = None
@@ -159,3 +186,79 @@ class SteinelConfigFlow(ConfigFlow, domain=DOMAIN):
     @staticmethod
     def _valid_oob(value: str) -> bool:
         return not value or bool(re.fullmatch(r"[0-9a-fA-F]{32}", value))
+
+
+class SteinelOptionsFlow(OptionsFlow):
+    """Configure connection, provisioning and polling behaviour."""
+
+    async def async_step_init(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        if user_input is not None:
+            rescan = user_input.pop("rescan_models", False)
+            if rescan:
+                data = dict(self.config_entry.data)
+                for key in (
+                    CONF_ELEMENTS,
+                    CONF_MODEL_SCHEMA_VERSION,
+                    CONF_SENSOR_PROPERTIES,
+                ):
+                    data.pop(key, None)
+                self.hass.config_entries.async_update_entry(
+                    self.config_entry, data=data
+                )
+            return self.async_create_entry(data=user_input)
+
+        options = self.config_entry.options
+        number = lambda minimum, maximum, step=1: NumberSelector(  # noqa: E731
+            NumberSelectorConfig(
+                min=minimum,
+                max=maximum,
+                step=step,
+                mode=NumberSelectorMode.BOX,
+            )
+        )
+        return self.async_show_form(
+            step_id="init",
+            data_schema=vol.Schema(
+                {
+                    vol.Required(
+                        CONF_CONNECT_ATTEMPTS,
+                        default=options.get(
+                            CONF_CONNECT_ATTEMPTS, DEFAULT_CONNECT_ATTEMPTS
+                        ),
+                    ): number(1, 12),
+                    vol.Required(
+                        CONF_COMMAND_TIMEOUT,
+                        default=options.get(
+                            CONF_COMMAND_TIMEOUT, DEFAULT_COMMAND_TIMEOUT
+                        ),
+                    ): number(5, 60),
+                    vol.Required(
+                        CONF_PROVISION_ATTEMPTS,
+                        default=options.get(
+                            CONF_PROVISION_ATTEMPTS, DEFAULT_PROVISION_ATTEMPTS
+                        ),
+                    ): number(1, 6),
+                    vol.Required(
+                        CONF_SENSOR_INTERVAL,
+                        default=options.get(
+                            CONF_SENSOR_INTERVAL, DEFAULT_SENSOR_INTERVAL
+                        ),
+                    ): number(30, 3600, 10),
+                    vol.Required(
+                        CONF_RESTORE_BRIGHTNESS,
+                        default=options.get(
+                            CONF_RESTORE_BRIGHTNESS, DEFAULT_RESTORE_BRIGHTNESS
+                        ),
+                    ): BooleanSelector(),
+                    vol.Required(
+                        CONF_BRIGHTNESS_DELAY,
+                        default=options.get(
+                            CONF_BRIGHTNESS_DELAY, DEFAULT_BRIGHTNESS_DELAY
+                        ),
+                    ): number(0, 2, 0.05),
+                    vol.Required("rescan_models", default=False): BooleanSelector(),
+                }
+            ),
+        )

@@ -5,6 +5,21 @@ from __future__ import annotations
 DOMAIN = "steinel_ble"
 PLATFORMS = ["light", "sensor", "binary_sensor"]
 
+CONF_CONNECT_ATTEMPTS = "connect_attempts"
+CONF_COMMAND_TIMEOUT = "command_timeout"
+CONF_SENSOR_INTERVAL = "sensor_interval"
+CONF_RESTORE_BRIGHTNESS = "restore_brightness"
+CONF_BRIGHTNESS_DELAY = "brightness_delay"
+CONF_PROVISION_ATTEMPTS = "provision_attempts"
+CONF_SENSOR_PROPERTIES = "sensor_properties"
+
+DEFAULT_CONNECT_ATTEMPTS = 6
+DEFAULT_COMMAND_TIMEOUT = 15
+DEFAULT_SENSOR_INTERVAL = 90
+DEFAULT_RESTORE_BRIGHTNESS = True
+DEFAULT_BRIGHTNESS_DELAY = 0.25
+DEFAULT_PROVISION_ATTEMPTS = 3
+
 CONF_ADDRESS = "address"
 CONF_STATIC_OOB = "static_oob"
 CONF_UNICAST_ADDRESS = "unicast_address"

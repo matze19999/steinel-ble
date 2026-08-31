@@ -112,6 +112,7 @@ class MeshNode:
         primary_address: int,
         sequence_changed: Callable[[int], None],
         access_received: Callable[[int, int, bytes], None] | None = None,
+        request_timeout: float = 15,
     ) -> None:
         self.transport = transport
         self.net_keys = NetworkKeys.derive(net_key)
@@ -122,6 +123,7 @@ class MeshNode:
         self.primary_address = primary_address
         self.sequence_changed = sequence_changed
         self.access_received = access_received
+        self.request_timeout = request_timeout
         self.src = 0x0001
         self._tid = 0
         self._requests: list[
@@ -347,7 +349,7 @@ class MeshNode:
         response_opcode: int,
         *,
         device_key: bool = False,
-        timeout: float = 15,
+        timeout: float | None = None,
     ) -> tuple[int, bytes]:
         """Send access data and wait for its acknowledged response."""
         future: asyncio.Future[tuple[int, bytes]] = (
@@ -357,7 +359,9 @@ class MeshNode:
         self._requests.append(request)
         try:
             await self.send_access(dst, opcode, parameters, device_key=device_key)
-            return await asyncio.wait_for(future, timeout)
+            return await asyncio.wait_for(
+                future, self.request_timeout if timeout is None else timeout
+            )
         finally:
             self._requests.remove(request)
 
@@ -367,7 +371,7 @@ class MeshNode:
         opcode: int,
         parameters: bytes = b"",
         *,
-        timeout: float = 10,
+        timeout: float | None = None,
     ) -> tuple[int, int, bytes]:
         """Send a Steinel vendor message and accept its authenticated reply."""
         future: asyncio.Future[tuple[int, int, bytes]] = (
@@ -380,7 +384,9 @@ class MeshNode:
                 bytes((opcode,)) + (0x0563).to_bytes(2, "little"), "big"
             )
             await self.send_access(dst, wire_opcode, parameters)
-            return await asyncio.wait_for(future, timeout)
+            return await asyncio.wait_for(
+                future, self.request_timeout if timeout is None else timeout
+            )
         finally:
             self._vendor_requests.remove(request)
 

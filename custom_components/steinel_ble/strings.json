@@ -26,6 +26,29 @@
       }
     }
   },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Configure Bluetooth Mesh device",
+        "description": "Changes are applied by reloading the device. Rescanning models also repeats sensor-property detection.",
+        "data": {
+          "connect_attempts": "BLE connection attempts",
+          "command_timeout": "Mesh command timeout (seconds)",
+          "provision_attempts": "Provisioning Invite attempts",
+          "sensor_interval": "Sensor polling interval (seconds)",
+          "restore_brightness": "Restore remembered brightness after turning on",
+          "brightness_delay": "Brightness restore delay (seconds)",
+          "rescan_models": "Rescan models and sensor properties"
+        }
+      }
+    }
+  },
+  "issues": {
+    "reset_failed": {
+      "title": "Mesh reset failed for {name}",
+      "description": "Close the STEINEL app and every other Bluetooth client completely. Briefly disconnect the lamp from mains power, restore power, and immediately reload the integration entry. The reset is accepted only during a short startup window."
+    }
+  },
   "entity": {
     "light": {
       "light": {"name": "Light"}

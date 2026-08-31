@@ -18,9 +18,16 @@ from homeassistant.const import (
     UnitOfTime,
 )
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
+from homeassistant.helpers.event import async_track_time_interval
 
 from . import SteinelConfigEntry
-from .const import MODEL_STEINEL_SENSOR_EXTENSION, STEINEL_COMPANY_ID
+from .const import (
+    CONF_SENSOR_INTERVAL,
+    CONF_SENSOR_PROPERTIES,
+    DEFAULT_SENSOR_INTERVAL,
+    MODEL_STEINEL_SENSOR_EXTENSION,
+    STEINEL_COMPANY_ID,
+)
 from .coordinator import SteinelCoordinator
 from .mesh import ElementComposition
 from .sensor_protocol import SENSOR_PROPERTIES, decode_sensor_value
@@ -55,6 +62,8 @@ async def async_setup_entry(
         for element in coordinator.elements
         if (STEINEL_COMPANY_ID, MODEL_STEINEL_SENSOR_EXTENSION) in element.vendor_models
         for name, property_id in SENSOR_PROPERTIES.items()
+        if name
+        in entry.data.get(CONF_SENSOR_PROPERTIES, {}).get(str(element.address), [])
         if name != "presence"
     )
 
@@ -63,7 +72,7 @@ class SteinelPropertySensor(SensorEntity):
     """A polled Bluetooth SIG property carried by a Steinel vendor model."""
 
     _attr_has_entity_name = True
-    _attr_should_poll = True
+    _attr_should_poll = False
     _attr_state_class = SensorStateClass.MEASUREMENT
 
     def __init__(
@@ -85,6 +94,24 @@ class SteinelPropertySensor(SensorEntity):
         self._attr_native_unit_of_measurement = unit
         self._attr_native_value: Any = None
         self._attr_available = False
+
+    async def async_added_to_hass(self) -> None:
+        """Start polling at the interval selected for this entry."""
+        await self.async_update()
+        interval = int(
+            self.coordinator.entry.options.get(
+                CONF_SENSOR_INTERVAL, DEFAULT_SENSOR_INTERVAL
+            )
+        )
+        self.async_on_remove(
+            async_track_time_interval(
+                self.hass, self._async_interval_update, timedelta(seconds=interval)
+            )
+        )
+
+    async def _async_interval_update(self, _now) -> None:
+        await self.async_update()
+        self.async_write_ha_state()
 
     async def async_update(self) -> None:
         """Read and decode the property."""

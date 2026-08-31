@@ -5,12 +5,12 @@
     {"service_uuid": "00001827-0000-1000-8000-00805f9b34fb", "connectable": true},
     {"service_uuid": "00001828-0000-1000-8000-00805f9b34fb", "connectable": true}
   ],
-  "codeowners": [],
+  "codeowners": ["@matze19999"],
   "config_flow": true,
   "dependencies": ["bluetooth_adapters"],
-  "documentation": "https://github.com/steinel-connect/home-assistant-steinel-ble",
+  "documentation": "https://github.com/matze19999/steinel-ble",
   "integration_type": "device",
   "iot_class": "local_push",
   "requirements": ["bleak-retry-connector>=4.4.0"],
-  "version": "0.1.0"
+  "version": "0.2.0"
 }

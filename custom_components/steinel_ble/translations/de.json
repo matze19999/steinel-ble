@@ -26,5 +26,28 @@
       }
     }
   },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Bluetooth-Mesh-Gerät konfigurieren",
+        "description": "Änderungen werden durch erneutes Laden des Geräts übernommen. Eine Modellsuche erkennt auch die verfügbaren Sensoreigenschaften erneut.",
+        "data": {
+          "connect_attempts": "BLE-Verbindungsversuche",
+          "command_timeout": "Mesh-Befehlszeitlimit (Sekunden)",
+          "provision_attempts": "Versuche für Provisioning Invite",
+          "sensor_interval": "Sensor-Abfrageintervall (Sekunden)",
+          "restore_brightness": "Gespeicherte Helligkeit nach Einschalten wiederherstellen",
+          "brightness_delay": "Verzögerung der Helligkeitswiederherstellung (Sekunden)",
+          "rescan_models": "Modelle und Sensoreigenschaften neu erkennen"
+        }
+      }
+    }
+  },
+  "issues": {
+    "reset_failed": {
+      "title": "Mesh-Reset für {name} fehlgeschlagen",
+      "description": "Schließe die STEINEL-App und alle anderen Bluetooth-Clients vollständig. Trenne die Lampe kurz vom Strom, schalte sie wieder ein und lade den Integrationseintrag sofort neu. Der Reset wird nur während eines kurzen Zeitfensters nach dem Einschalten akzeptiert."
+    }
+  },
   "entity": {"light": {"light": {"name": "Licht"}}}
 }

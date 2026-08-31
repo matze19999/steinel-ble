@@ -1,11 +1,12 @@
 <p align="center">
-  <img src="https://raw.githubusercontent.com/matze19999/steinel-ble/main/steinel.png" alt="STEINEL" height="80">
+  <img src="https://raw.githubusercontent.com/matze19999/steinel-ble/main/custom_components/steinel_ble/brand/logo.png" alt="STEINEL" height="80">
 </p>
 
 <h1 align="center">STEINEL Connect BLE for Home Assistant</h1>
 
 <p align="center">
   <a href="https://github.com/hacs/integration"><img src="https://img.shields.io/badge/HACS-Custom-41BDF5.svg" alt="HACS Custom"></a>
+  <a href="https://github.com/matze19999/steinel-ble/actions/workflows/validate.yml"><img src="https://github.com/matze19999/steinel-ble/actions/workflows/validate.yml/badge.svg" alt="Validate"></a>
   <a href="https://github.com/matze19999/steinel-ble/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="MIT License"></a>
 </p>
 
@@ -55,6 +56,9 @@ SDK. See [Legal](#legal).
   so an ESPHome proxy such as the XIAO ESP32S3 can provide the BLE connection.
 - **Acknowledged state updates** - acknowledged Bluetooth Mesh status messages
   update the entity state in Home Assistant.
+- **Diagnostics and configurable behaviour** - credential-free diagnostics,
+  background reconnection, command timeouts, retry counts, sensor polling and
+  brightness restoration can be managed from the integration options.
 
 ## Installation
 
@@ -129,6 +133,26 @@ the required preparation steps:
 If the reset window was missed, remove or reload the failed integration entry
 and repeat the power-cycle procedure. Do not open the STEINEL app during this
 process.
+
+## Options and diagnostics
+
+Open *Settings → Devices & services → STEINEL Connect Bluetooth Mesh*, select
+the device and choose *Configure* to adjust:
+
+- BLE connection and Provisioning Invite attempts;
+- the acknowledged Mesh command timeout;
+- the sensor polling interval;
+- remembered-brightness restoration and its delay; and
+- a one-time rescan of Composition Data and sensor properties.
+
+Changing an option reloads only that device. A dropped proxy connection is
+handled in the background with exponential backoff and does not require a
+manual integration reload.
+
+Home Assistant's device diagnostics download includes model composition,
+detected sensor properties, connection state, reconnect count, Bluetooth
+source and RSSI. NetKey, AppKey, Device Key and Static OOB values are always
+redacted.
 
 ## How it works
 

@@ -27,7 +27,18 @@ async def async_setup_entry(hass: HomeAssistant, entry: SteinelConfigEntry) -> b
     await coordinator.async_setup()
     entry.runtime_data = coordinator
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+    entry.async_on_unload(entry.add_update_listener(_async_update_listener))
     return True
+
+
+async def _async_update_listener(
+    hass: HomeAssistant, entry: SteinelConfigEntry
+) -> None:
+    """Reload the entry after its options change."""
+    runtime_data = getattr(entry, "runtime_data", None)
+    if runtime_data and runtime_data.loaded_options == dict(entry.options):
+        return
+    await hass.config_entries.async_reload(entry.entry_id)
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: SteinelConfigEntry) -> bool:

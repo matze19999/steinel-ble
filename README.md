@@ -155,8 +155,11 @@ the device and choose *Configure* to adjust:
 Changing an option reloads only that device. Persistent BLE connections remain
 the default and provide the fastest response. Enabling idle disconnect frees a
 proxy connection slot after the configured period, but the next command must
-first reconnect and therefore responds more slowly. Unexpected connection
-losses are handled in the background with exponential backoff.
+first reconnect and therefore responds more slowly. In testing with a XIAO
+ESP32S3 Bluetooth proxy and an L 845 C, a command after an idle disconnect took
+approximately 12 seconds. The actual delay depends on signal quality, proxy
+load and the STEINEL device. Unexpected connection losses are handled in the
+background with exponential backoff.
 
 Home Assistant's device diagnostics download includes model composition,
 detected sensor properties, connection state, reconnect count, Bluetooth

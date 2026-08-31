@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
-from homeassistant.components.device_tracker import ScannerEntity, SourceType
+from homeassistant.components.device_tracker import BaseScannerEntity, SourceType
 from homeassistant.core import callback
+from homeassistant.helpers import device_registry as dr
+from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
 from . import SteinelConfigEntry
+from .const import DOMAIN
 from .coordinator import SteinelCoordinator
 
 
@@ -16,10 +19,24 @@ async def async_setup_entry(
     async_add_entities: AddConfigEntryEntitiesCallback,
 ) -> None:
     """Create one reachability tracker for the configured node."""
-    async_add_entities([SteinelReachabilityTracker(entry.runtime_data)])
+    coordinator = entry.runtime_data
+    unique_id = f"{coordinator.address}_reachability"
+    device = dr.async_get(hass).async_get_device(
+        identifiers={(DOMAIN, coordinator.address)}
+    )
+    er.async_get(hass).async_get_or_create(
+        "device_tracker",
+        DOMAIN,
+        unique_id,
+        config_entry=entry,
+        device_id=device.id if device else None,
+        original_name="Reachability",
+        suggested_object_id=f"{entry.title}_reachability",
+    )
+    async_add_entities([SteinelReachabilityTracker(coordinator)])
 
 
-class SteinelReachabilityTracker(ScannerEntity):
+class SteinelReachabilityTracker(BaseScannerEntity):
     """Represent whether the node has a usable Mesh Proxy connection."""
 
     _attr_has_entity_name = True

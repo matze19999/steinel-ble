@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.2.2
+
+- Use a registry-backed tracker entity so reachability appears directly on the
+  corresponding STEINEL device page in Home Assistant.
+
 ## 0.2.1
 
 - Added a Bluetooth `device_tracker` entity for every configured STEINEL

@@ -21,9 +21,12 @@ from homeassistant.exceptions import (
 from homeassistant.helpers import issue_registry as ir
 from homeassistant.helpers.device_registry import DeviceInfo
 
+from .advertisement import parse_steinel_advertisement
 from .const import (
     CONF_ADDRESS,
+    CONF_ADVERTISEMENT_TIMEOUT,
     CONF_APP_KEY,
+    CONF_BOOTLOADER,
     CONF_BRIGHTNESS_DELAY,
     CONF_COMMAND_TIMEOUT,
     CONF_CONNECT_ATTEMPTS,
@@ -31,18 +34,24 @@ from .const import (
     CONF_DISCONNECT_WHEN_IDLE,
     CONF_ELEMENT_COUNT,
     CONF_ELEMENTS,
+    CONF_FIRMWARE,
+    CONF_HARDWARE,
+    CONF_HASH_ID,
     CONF_IDLE_DISCONNECT_DELAY,
     CONF_IV_INDEX,
+    CONF_LIGHT_STATES,
     CONF_MODEL_SCHEMA_VERSION,
     CONF_NET_KEY,
     CONF_NODE_STATE,
     CONF_PRODUCT_ID,
     CONF_PROVISION_ATTEMPTS,
     CONF_RESTORE_BRIGHTNESS,
+    CONF_SENSOR_INTERVAL,
     CONF_SENSOR_PROPERTIES,
     CONF_SEQUENCE,
     CONF_STATIC_OOB,
     CONF_UNICAST_ADDRESS,
+    DEFAULT_ADVERTISEMENT_TIMEOUT,
     DEFAULT_BRIGHTNESS_DELAY,
     DEFAULT_COMMAND_TIMEOUT,
     DEFAULT_CONNECT_ATTEMPTS,
@@ -50,6 +59,7 @@ from .const import (
     DEFAULT_IDLE_DISCONNECT_DELAY,
     DEFAULT_PROVISION_ATTEMPTS,
     DEFAULT_RESTORE_BRIGHTNESS,
+    DEFAULT_SENSOR_INTERVAL,
     DEFAULT_UNICAST_ADDRESS,
     DOMAIN,
     MESH_PROVISIONING_DATA_IN,
@@ -87,6 +97,7 @@ from .gatt import MeshGattTransport
 from .mesh import ElementComposition, MeshNode
 from .provisioning import Provisioner, ProvisioningError
 from .sensor_protocol import SENSOR_PROPERTIES, decode_sensor_value
+from .state_store import restore_light_states, serialize_light_states
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -106,21 +117,31 @@ class SteinelCoordinator:
         self.node: MeshNode | None = None
         self.elements: list[ElementComposition] = []
         self.available = False
-        self.is_on: dict[int, bool] = {}
-        self.brightness: dict[int, int] = {}
-        self.color_temperature: dict[int, int] = {}
-        self.hs_color: dict[int, tuple[float, float]] = {}
+        restored = restore_light_states(entry.data.get(CONF_LIGHT_STATES))
+        self.is_on, self.brightness, self.color_temperature, self.hs_color = restored
+        self.sensor_values: dict[tuple[int, str], Any] = {}
         self._listeners: list[Callable[[], None]] = []
         self._connect_lock = asyncio.Lock()
         self._disconnect_event = asyncio.Event()
         self._reconnect_task: asyncio.Task[None] | None = None
         self._idle_task: asyncio.Task[None] | None = None
+        self._sensor_task: asyncio.Task[None] | None = None
+        self._state_task: asyncio.Task[None] | None = None
+        self._advertisement_task: asyncio.Task[None] | None = None
+        self._cancel_advertisement: Callable[[], None] | None = None
+        self.last_advertisement: datetime | None = None
+        self.advertisement_available = False
+        self._light_commands = 0
         self._suppress_disconnect = False
         self._shutting_down = False
         self.reconnect_count = 0
         self.last_connected: datetime | None = None
         self.last_error: str | None = None
         self.loaded_options = dict(entry.options)
+        domain_data = hass.data.setdefault(DOMAIN, {})
+        self._proxy_lock: asyncio.Lock = domain_data.setdefault(
+            "proxy_connection_lock", asyncio.Lock()
+        )
 
     @property
     def device_info(self) -> DeviceInfo:
@@ -136,10 +157,32 @@ class SteinelCoordinator:
             manufacturer="Steinel",
             model=model,
             name=self.entry.title,
+            sw_version=self.entry.data.get(CONF_FIRMWARE),
+            hw_version=(
+                str(self.entry.data[CONF_HARDWARE])
+                if CONF_HARDWARE in self.entry.data
+                else None
+            ),
+            serial_number=(
+                str(self.entry.data[CONF_HASH_ID])
+                if CONF_HASH_ID in self.entry.data
+                else None
+            ),
         )
+
+    @property
+    def reachable(self) -> bool:
+        """Return reachability from an active proxy or recent advertising."""
+        connected = bool(
+            self.transport
+            and self.transport.client
+            and self.transport.client.is_connected
+        )
+        return connected or self.advertisement_available
 
     async def async_setup(self) -> None:
         """Provision when needed, then connect and configure the node."""
+        self._start_advertisement_monitor()
         if CONF_NET_KEY not in self.entry.data:
             self._update_entry(
                 {
@@ -176,6 +219,7 @@ class SteinelCoordinator:
             self.available = True
             self.last_connected = datetime.now(UTC)
             self._start_reconnect_monitor()
+            self._start_sensor_polling()
             self._arm_idle_disconnect()
         except (
             BleakError,
@@ -200,10 +244,75 @@ class SteinelCoordinator:
             self._idle_task.cancel()
             await asyncio.gather(self._idle_task, return_exceptions=True)
             self._idle_task = None
+        for task_name in ("_sensor_task", "_state_task", "_advertisement_task"):
+            task = getattr(self, task_name)
+            if task:
+                task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
+                setattr(self, task_name, None)
+        if self._cancel_advertisement:
+            self._cancel_advertisement()
+            self._cancel_advertisement = None
+        self._persist_light_states()
         if self.transport:
             await self.transport.disconnect()
         self.transport = None
         self.node = None
+        self._notify()
+
+    def _start_advertisement_monitor(self) -> None:
+        """Listen for passive advertisements from this address."""
+        if self._cancel_advertisement is not None:
+            return
+        self._cancel_advertisement = bluetooth.async_register_callback(
+            self.hass,
+            self._advertisement_received,
+            {"address": self.address},
+            bluetooth.BluetoothScanningMode.ACTIVE,
+        )
+        info = bluetooth.async_last_service_info(
+            self.hass, self.address, connectable=False
+        )
+        if info:
+            self._advertisement_received(info, None)
+
+    @callback
+    def _advertisement_received(self, info, _change) -> None:
+        """Record passive reachability and advertised device metadata."""
+        self.last_advertisement = datetime.now(UTC)
+        self.advertisement_available = True
+        data = parse_steinel_advertisement(
+            info.manufacturer_data.get(STEINEL_COMPANY_ID, b""), info.name
+        )
+        allowed = {
+            "product_id": CONF_PRODUCT_ID,
+            "firmware": CONF_FIRMWARE,
+            "bootloader": CONF_BOOTLOADER,
+            "hardware": CONF_HARDWARE,
+            "hash_id": CONF_HASH_ID,
+        }
+        updates = {
+            target: data[source]
+            for source, target in allowed.items()
+            if source in data and self.entry.data.get(target) != data[source]
+        }
+        if updates:
+            self._update_entry(updates)
+        if self._advertisement_task:
+            self._advertisement_task.cancel()
+        self._advertisement_task = self.hass.async_create_task(
+            self._async_expire_advertisement(),
+            f"steinel_ble advertisement timeout {self.address}",
+        )
+        self._notify()
+
+    async def _async_expire_advertisement(self) -> None:
+        await asyncio.sleep(
+            float(
+                self._option(CONF_ADVERTISEMENT_TIMEOUT, DEFAULT_ADVERTISEMENT_TIMEOUT)
+            )
+        )
+        self.advertisement_available = False
         self._notify()
 
     def _option(self, key: str, default: Any) -> Any:
@@ -430,7 +539,7 @@ class SteinelCoordinator:
             self.hass,
             DOMAIN,
             f"reset_{self.entry.entry_id}",
-            is_fixable=False,
+            is_fixable=True,
             severity=ir.IssueSeverity.ERROR,
             translation_key="reset_failed",
             translation_placeholders={"name": self.entry.title},
@@ -441,51 +550,15 @@ class SteinelCoordinator:
         )
 
     async def _async_connect_proxy(self) -> None:
+        """Queue proxy connection establishment across integration entries."""
         last_error: Exception | None = None
         attempts = int(self._option(CONF_CONNECT_ATTEMPTS, DEFAULT_CONNECT_ATTEMPTS))
         for attempt in range(attempts):
             if attempt:
                 await asyncio.sleep(min(5 * attempt, 15))
             try:
-                device = await self._async_ble_device()
-                transport = MeshGattTransport(
-                    device,
-                    self.entry.title,
-                    MESH_PROXY_DATA_IN,
-                    MESH_PROXY_DATA_OUT,
-                    lambda _type, _payload: asyncio.sleep(0),
-                    self._transport_disconnected,
-                )
-                await transport.connect(subscribe=False)
-                if (
-                    not transport.has_service(MESH_PROXY_SERVICE)
-                    and await transport.clear_cache()
-                ):
-                    await transport.disconnect()
-                    await transport.connect(subscribe=False)
-                if not transport.has_service(MESH_PROXY_SERVICE):
-                    await transport.disconnect()
-                    raise SteinelConnectionError(
-                        "Mesh Proxy GATT service is unavailable"
-                    )
-                await transport.subscribe()
-                node = MeshNode(
-                    transport,
-                    bytes.fromhex(self.entry.data[CONF_NET_KEY]),
-                    bytes.fromhex(self.entry.data[CONF_APP_KEY]),
-                    bytes.fromhex(self.entry.data[CONF_DEVICE_KEY]),
-                    self.entry.data[CONF_IV_INDEX],
-                    self.entry.data.get(CONF_SEQUENCE, 0),
-                    self.entry.data[CONF_UNICAST_ADDRESS],
-                    self._sequence_changed,
-                    self._access_received,
-                    float(self._option(CONF_COMMAND_TIMEOUT, DEFAULT_COMMAND_TIMEOUT)),
-                )
-                transport.handler = node.handle_pdu
-                self.transport, self.node = transport, node
-                await node.initialize_proxy_filter()
-                self.last_connected = datetime.now(UTC)
-                self.last_error = None
+                async with self._proxy_lock:
+                    await self._async_connect_proxy_attempt()
                 return
             except (BleakError, ConnectionError, SteinelConnectionError) as err:
                 last_error = err
@@ -493,6 +566,46 @@ class SteinelCoordinator:
                     "Proxy connection attempt %s failed", attempt + 1, exc_info=True
                 )
         raise SteinelConnectionError(str(last_error or "Mesh Proxy was not discovered"))
+
+    async def _async_connect_proxy_attempt(self) -> None:
+        """Perform one connection attempt in the shared proxy slot."""
+        device = await self._async_ble_device()
+        transport = MeshGattTransport(
+            device,
+            self.entry.title,
+            MESH_PROXY_DATA_IN,
+            MESH_PROXY_DATA_OUT,
+            lambda _type, _payload: asyncio.sleep(0),
+            self._transport_disconnected,
+        )
+        await transport.connect(subscribe=False)
+        if (
+            not transport.has_service(MESH_PROXY_SERVICE)
+            and await transport.clear_cache()
+        ):
+            await transport.disconnect()
+            await transport.connect(subscribe=False)
+        if not transport.has_service(MESH_PROXY_SERVICE):
+            await transport.disconnect()
+            raise SteinelConnectionError("Mesh Proxy GATT service is unavailable")
+        await transport.subscribe()
+        node = MeshNode(
+            transport,
+            bytes.fromhex(self.entry.data[CONF_NET_KEY]),
+            bytes.fromhex(self.entry.data[CONF_APP_KEY]),
+            bytes.fromhex(self.entry.data[CONF_DEVICE_KEY]),
+            self.entry.data[CONF_IV_INDEX],
+            self.entry.data.get(CONF_SEQUENCE, 0),
+            self.entry.data[CONF_UNICAST_ADDRESS],
+            self._sequence_changed,
+            self._access_received,
+            float(self._option(CONF_COMMAND_TIMEOUT, DEFAULT_COMMAND_TIMEOUT)),
+        )
+        transport.handler = node.handle_pdu
+        self.transport, self.node = transport, node
+        await node.initialize_proxy_filter()
+        self.last_connected = datetime.now(UTC)
+        self.last_error = None
 
     async def _async_configure(self) -> None:
         assert self.node is not None
@@ -598,6 +711,7 @@ class SteinelCoordinator:
         use_lc: bool = False,
     ) -> None:
         """Set Generic/LC OnOff and optional Light Lightness Actual."""
+        self._light_commands += 1
         try:
             node = await self.async_ensure_connected()
             remembered_brightness = self.brightness.get(address)
@@ -648,6 +762,8 @@ class SteinelCoordinator:
             self.available = False
             raise
         finally:
+            self._light_commands -= 1
+            self._schedule_state_persist()
             self._arm_idle_disconnect()
             self._notify()
 
@@ -655,6 +771,7 @@ class SteinelCoordinator:
         self, address: int, brightness: int, temperature_kelvin: int
     ) -> None:
         """Set Light CTL lightness and color temperature."""
+        self._light_commands += 1
         try:
             node = await self.async_ensure_connected()
             lightness = round(brightness * 65535 / 255)
@@ -677,6 +794,8 @@ class SteinelCoordinator:
             self.available = False
             raise
         finally:
+            self._light_commands -= 1
+            self._schedule_state_persist()
             self._arm_idle_disconnect()
             self._notify()
 
@@ -684,6 +803,7 @@ class SteinelCoordinator:
         self, address: int, brightness: int, hue: float, saturation: float
     ) -> None:
         """Set Light HSL lightness, hue, and saturation."""
+        self._light_commands += 1
         try:
             node = await self.async_ensure_connected()
             lightness = round(brightness * 65535 / 255)
@@ -708,6 +828,8 @@ class SteinelCoordinator:
             self.available = False
             raise
         finally:
+            self._light_commands -= 1
+            self._schedule_state_persist()
             self._arm_idle_disconnect()
             self._notify()
 
@@ -727,6 +849,70 @@ class SteinelCoordinator:
             return parameters
         finally:
             self._arm_idle_disconnect()
+
+    def _start_sensor_polling(self) -> None:
+        """Start one polling loop for all properties of this node."""
+        properties = self.entry.data.get(CONF_SENSOR_PROPERTIES, {})
+        if properties and (self._sensor_task is None or self._sensor_task.done()):
+            self._sensor_task = self.hass.async_create_task(
+                self._async_sensor_poll_loop(),
+                f"steinel_ble sensor polling {self.address}",
+            )
+
+    async def _async_sensor_poll_loop(self) -> None:
+        await self._async_poll_sensors()
+        while not self._shutting_down:
+            await asyncio.sleep(
+                float(self._option(CONF_SENSOR_INTERVAL, DEFAULT_SENSOR_INTERVAL))
+            )
+            await self._async_poll_sensors()
+
+    async def _async_poll_sensors(self) -> None:
+        """Refresh all properties in one low-priority connection session."""
+        if self._light_commands:
+            return
+        properties = self.entry.data.get(CONF_SENSOR_PROPERTIES, {})
+        changed = False
+        for address_text, names in properties.items():
+            for name in names:
+                if self._light_commands:
+                    break
+                property_id = SENSOR_PROPERTIES.get(name)
+                if property_id is None:
+                    continue
+                try:
+                    raw = await self.async_get_sensor(int(address_text), property_id)
+                except Exception:
+                    continue
+                value = decode_sensor_value(name, raw)
+                self.sensor_values[(int(address_text), name)] = value
+                changed = True
+        if changed:
+            self._notify()
+
+    @callback
+    def _schedule_state_persist(self) -> None:
+        """Persist acknowledged light state with a short write debounce."""
+        if self._shutting_down:
+            return
+        if self._state_task:
+            self._state_task.cancel()
+        self._state_task = self.hass.async_create_task(
+            self._async_persist_light_states(),
+            f"steinel_ble persist state {self.address}",
+        )
+
+    async def _async_persist_light_states(self) -> None:
+        await asyncio.sleep(2)
+        self._persist_light_states()
+
+    @callback
+    def _persist_light_states(self) -> None:
+        states = serialize_light_states(
+            self.is_on, self.brightness, self.color_temperature, self.hs_color
+        )
+        if self.entry.data.get(CONF_LIGHT_STATES) != states:
+            self._update_entry({CONF_LIGHT_STATES: states})
 
     @callback
     def _sequence_changed(self, sequence: int) -> None:
@@ -752,6 +938,7 @@ class SteinelCoordinator:
             self.brightness[src] = round(level * 255 / 65535)
             self.hs_color[src] = (hue, saturation)
             self.is_on[src] = level > 0
+        self._schedule_state_persist()
         self._notify()
 
     @callback

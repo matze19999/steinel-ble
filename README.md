@@ -45,11 +45,14 @@ SDK. See [Legal](#legal).
   automatically for compatible lamps.
 - **Remembered brightness** - turning a lamp off and back on restores the last
   brightness acknowledged by Home Assistant, including devices that otherwise
-  return to their configured 100% OnPowerUp level.
+  return to their configured 100% OnPowerUp level. Acknowledged light state is
+  retained across Home Assistant and integration restarts.
 - **Optional sensor entities** - devices with the STEINEL Sensor Extension
   model can expose presence, motion, people count, temperature, humidity, CO₂,
   VOC, noise, air pressure, dew point, and time-since-motion/presence values.
-  Unsupported properties remain unavailable.
+  Unsupported properties remain unavailable. All properties of a device are
+  refreshed by one shared polling cycle so they do not establish competing BLE
+  sessions; light commands take priority over background polling.
 - **Bluetooth proxy support** - connections use Home Assistant's Bluetooth
   stack and
   [`bleak-retry-connector`](https://github.com/Bluetooth-Devices/bleak-retry-connector),
@@ -61,7 +64,17 @@ SDK. See [Legal](#legal).
   `unknown` light state when the device responds.
 - **Reachability tracking** - every configured device has a Bluetooth
   `device_tracker` that reports `home` while its Mesh Proxy connection is
-  usable and `not_home` while it is unreachable or reconnecting.
+  usable or the device has advertised recently. This remains meaningful when
+  idle disconnect is enabled and no permanent GATT connection is held.
+- **Advertised device information** - product ID, firmware, hardware revision,
+  bootloader and device hash are read passively from manufacturer data where
+  the firmware advertises them.
+- **Proxy connection queue** - connection establishment is serialized across
+  STEINEL entries, avoiding simultaneous connection attempts that can exhaust
+  a small ESPHome proxy's BLE slots.
+- **Guided reset repair** - a failed foreign-mesh reset creates an actionable
+  Home Assistant repair that explains the power-cycle timing and retries setup
+  immediately after confirmation.
 - **Diagnostics and configurable behaviour** - credential-free diagnostics,
   background reconnection, command timeouts, retry counts, sensor polling and
   brightness restoration can be managed from the integration options.
@@ -150,6 +163,8 @@ the device and choose *Configure* to adjust:
 - the sensor polling interval;
 - remembered-brightness restoration and its delay; and
 - optional release of an idle BLE connection and the idle delay; and
+- the time after which a missing Bluetooth advertisement marks the device as
+  unreachable; and
 - a one-time rescan of Composition Data and sensor properties.
 
 Changing an option reloads only that device. Persistent BLE connections remain
@@ -162,9 +177,9 @@ load and the STEINEL device. Unexpected connection losses are handled in the
 background with exponential backoff.
 
 Home Assistant's device diagnostics download includes model composition,
-detected sensor properties, connection state, reconnect count, Bluetooth
-source and RSSI. NetKey, AppKey, Device Key and Static OOB values are always
-redacted.
+detected sensor properties, active and passive reachability, last
+advertisement, connection state, reconnect count, Bluetooth source and RSSI.
+NetKey, AppKey, Device Key and Static OOB values are always redacted.
 
 ## How it works
 

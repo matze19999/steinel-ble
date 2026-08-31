@@ -19,6 +19,7 @@ from homeassistant.helpers.selector import (
 )
 
 from .const import (
+    CONF_ADVERTISEMENT_TIMEOUT,
     CONF_BRIGHTNESS_DELAY,
     CONF_COMMAND_TIMEOUT,
     CONF_CONNECT_ATTEMPTS,
@@ -32,6 +33,7 @@ from .const import (
     CONF_SENSOR_INTERVAL,
     CONF_SENSOR_PROPERTIES,
     CONF_STATIC_OOB,
+    DEFAULT_ADVERTISEMENT_TIMEOUT,
     DEFAULT_BRIGHTNESS_DELAY,
     DEFAULT_COMMAND_TIMEOUT,
     DEFAULT_CONNECT_ATTEMPTS,
@@ -276,6 +278,13 @@ class SteinelOptionsFlow(OptionsFlow):
                             DEFAULT_IDLE_DISCONNECT_DELAY,
                         ),
                     ): number(10, 600, 5),
+                    vol.Required(
+                        CONF_ADVERTISEMENT_TIMEOUT,
+                        default=options.get(
+                            CONF_ADVERTISEMENT_TIMEOUT,
+                            DEFAULT_ADVERTISEMENT_TIMEOUT,
+                        ),
+                    ): number(30, 900, 10),
                     vol.Required("rescan_models", default=False): BooleanSelector(),
                 }
             ),

@@ -51,7 +51,7 @@ class SteinelReachabilityTracker(BaseScannerEntity):
     @property
     def is_connected(self) -> bool:
         """Return whether the node currently has a usable proxy connection."""
-        return self.coordinator.available
+        return self.coordinator.reachable
 
     async def async_added_to_hass(self) -> None:
         """Subscribe to coordinator availability changes."""

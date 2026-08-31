@@ -2,28 +2,21 @@
 
 from __future__ import annotations
 
-from datetime import timedelta
-
 from homeassistant.components.binary_sensor import (
     BinarySensorDeviceClass,
     BinarySensorEntity,
 )
+from homeassistant.core import callback
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
-from homeassistant.helpers.event import async_track_time_interval
 
 from . import SteinelConfigEntry
 from .const import (
-    CONF_SENSOR_INTERVAL,
     CONF_SENSOR_PROPERTIES,
-    DEFAULT_SENSOR_INTERVAL,
     MODEL_STEINEL_SENSOR_EXTENSION,
     STEINEL_COMPANY_ID,
 )
 from .coordinator import SteinelCoordinator
 from .mesh import ElementComposition
-from .sensor_protocol import SENSOR_PROPERTIES, decode_sensor_value
-
-SCAN_INTERVAL = timedelta(seconds=30)
 
 
 async def async_setup_entry(
@@ -61,33 +54,20 @@ class SteinelPresenceSensor(BinarySensorEntity):
         self._attr_available = False
 
     async def async_added_to_hass(self) -> None:
-        """Start polling at the interval selected for this entry."""
-        await self.async_update()
-        interval = int(
-            self.coordinator.entry.options.get(
-                CONF_SENSOR_INTERVAL, DEFAULT_SENSOR_INTERVAL
-            )
-        )
+        """Subscribe to the coordinator's shared polling result."""
         self.async_on_remove(
-            async_track_time_interval(
-                self.hass, self._async_interval_update, timedelta(seconds=interval)
-            )
+            self.coordinator.async_add_listener(self._handle_coordinator_update)
         )
+        self._handle_coordinator_update()
 
-    async def _async_interval_update(self, _now) -> None:
-        await self.async_update()
-        self.async_write_ha_state()
-
-    async def async_update(self) -> None:
-        """Read the Presence Detected property."""
-        try:
-            raw = await self.coordinator.async_get_sensor(
-                self.element.address, SENSOR_PROPERTIES["presence"]
-            )
-        except Exception:
-            self._attr_available = False
+    @callback
+    def _handle_coordinator_update(self) -> None:
+        value = self.coordinator.sensor_values.get((self.element.address, "presence"))
+        if value is None:
             return
-        value = decode_sensor_value("presence", raw)
         self._attr_is_on = value.value if isinstance(value.value, bool) else None
-        self._attr_available = self._attr_is_on is not None
+        self._attr_available = (
+            self._attr_is_on is not None and self.coordinator.reachable
+        )
         self._attr_extra_state_attributes = {"raw": value.raw.hex(" ").upper()}
+        self.async_write_ha_state()

@@ -40,6 +40,7 @@
           "brightness_delay": "Verzögerung der Helligkeitswiederherstellung (Sekunden)",
           "disconnect_when_idle": "BLE-Verbindung bei Inaktivität freigeben",
           "idle_disconnect_delay": "Leerlaufzeit bis zum Trennen (Sekunden)",
+          "advertisement_timeout": "Zeitlimit für Erreichbarkeit per Advertising (Sekunden)",
           "rescan_models": "Modelle und Sensoreigenschaften neu erkennen"
         }
       }
@@ -48,7 +49,14 @@
   "issues": {
     "reset_failed": {
       "title": "Mesh-Reset für {name} fehlgeschlagen",
-      "description": "Schließe die STEINEL-App und alle anderen Bluetooth-Clients vollständig. Trenne die Lampe kurz vom Strom, schalte sie wieder ein und lade den Integrationseintrag sofort neu. Der Reset wird nur während eines kurzen Zeitfensters nach dem Einschalten akzeptiert."
+      "description": "Schließe die STEINEL-App und alle anderen Bluetooth-Clients vollständig. Trenne die Lampe kurz vom Strom, schalte sie wieder ein und starte sofort die Reparatur. Der Reset wird nur während eines kurzen Zeitfensters nach dem Einschalten akzeptiert.",
+      "fix_flow": {
+        "step": {"init": {
+          "title": "Mesh-Reset erneut versuchen",
+          "description": "Schließe die STEINEL-App und andere Bluetooth-Clients vollständig. Schalte {name} am Strom aus, warte kurz, schalte die Lampe ein und drücke sofort auf Absenden. Home Assistant versucht Reset und Einrichtung im kurzen Startzeitfenster erneut."
+        }},
+        "abort": {"entry_missing": "Der Integrationseintrag existiert nicht mehr."}
+      }
     }
   },
   "entity": {

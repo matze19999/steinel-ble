@@ -33,6 +33,9 @@ async def async_get_config_entry_diagnostics(
         "options": dict(entry.options),
         "runtime": {
             "available": coordinator.available,
+            "reachable": coordinator.reachable,
+            "advertisement_available": coordinator.advertisement_available,
+            "last_advertisement": coordinator.last_advertisement,
             "gatt_connected": bool(
                 coordinator.transport
                 and coordinator.transport.client
@@ -41,6 +44,10 @@ async def async_get_config_entry_diagnostics(
             "last_connected": coordinator.last_connected,
             "last_error": coordinator.last_error,
             "reconnect_count": coordinator.reconnect_count,
+            "sensor_values": {
+                f"{address:04x}_{name}": value.value
+                for (address, name), value in coordinator.sensor_values.items()
+            },
             "elements": coordinator._serialize_elements(coordinator.elements),
         },
         "bluetooth": {

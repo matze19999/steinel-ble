@@ -1,19 +1,16 @@
 {
   "domain": "steinel_ble",
-  "name": "STEINEL Connect BLE",
+  "name": "Steinel Connect Bluetooth Mesh",
   "bluetooth": [
-    {
-      "manufacturer_id": 1379,
-      "connectable": true
-    }
+    {"service_uuid": "00001827-0000-1000-8000-00805f9b34fb", "connectable": true},
+    {"service_uuid": "00001828-0000-1000-8000-00805f9b34fb", "connectable": true}
   ],
-  "codeowners": ["@matze19999"],
+  "codeowners": [],
   "config_flow": true,
-  "dependencies": ["bluetooth"],
-  "documentation": "https://github.com/matze19999/steinel-ble",
-  "iot_class": "local_polling",
-  "issue_tracker": "https://github.com/matze19999/steinel-ble/issues",
-  "requirements": ["bleak-retry-connector>=3.5.0"],
-  "single_config_entry": true,
+  "dependencies": ["bluetooth_adapters"],
+  "documentation": "https://github.com/steinel-connect/home-assistant-steinel-ble",
+  "integration_type": "device",
+  "iot_class": "local_push",
+  "requirements": ["bleak-retry-connector>=4.4.0"],
   "version": "0.1.0"
 }

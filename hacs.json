@@ -1,5 +1,5 @@
 {
-  "name": "STEINEL Connect BLE",
-  "render_readme": true,
-  "homeassistant": "2024.12.0"
+  "name": "Steinel Connect Bluetooth Mesh",
+  "content_in_root": false,
+  "render_readme": true
 }

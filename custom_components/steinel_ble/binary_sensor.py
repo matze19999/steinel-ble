@@ -1,72 +1,66 @@
-"""STEINEL Sensor Extension - presence/occupancy binary sensor.
-
-Only created for nodes where the vendor Sensor Extension model (0x1003)
-bound successfully - i.e. lamps/sensors that actually offer it, such as
-STEINEL products with a built-in motion detector. See
-STEINEL_BLE_KOMMUNIKATION.md section 4.2 and protocol.parse_sensor_value.
-"""
+"""Presence entity for the Steinel Sensor Extension model."""
 
 from __future__ import annotations
 
-import logging
+from datetime import timedelta
 
 from homeassistant.components.binary_sensor import (
     BinarySensorDeviceClass,
     BinarySensorEntity,
 )
-from homeassistant.config_entries import ConfigEntry
-from homeassistant.core import HomeAssistant
-from homeassistant.helpers.device_registry import CONNECTION_BLUETOOTH, DeviceInfo
-from homeassistant.helpers.entity_platform import AddEntitiesCallback
-from homeassistant.helpers.update_coordinator import CoordinatorEntity
+from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
-from .const import CAPABILITY_SENSOR_EXTENSION, DOMAIN, MANUFACTURER
-from .coordinator import SteinelMeshHub, SteinelSensorCoordinator
+from . import SteinelConfigEntry
+from .const import MODEL_STEINEL_SENSOR_EXTENSION, STEINEL_COMPANY_ID
+from .coordinator import SteinelCoordinator
+from .mesh import ElementComposition
+from .sensor_protocol import SENSOR_PROPERTIES, decode_sensor_value
 
-_LOGGER = logging.getLogger(__name__)
-
-
-async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_entities: AddEntitiesCallback) -> None:
-    hub: SteinelMeshHub = hass.data[DOMAIN][entry.entry_id]
-    entities: list[SteinelPresenceBinarySensor] = []
-    started: set[int] = set()
-    for unicast_key, node in hub.network.nodes.items():
-        capabilities: dict[str, bool] = node.get("capabilities") or {}
-        if not capabilities.get(CAPABILITY_SENSOR_EXTENSION):
-            continue
-        unicast = int(unicast_key, 16)
-        coordinator = hub.sensor_coordinator(unicast, node["address"], node.get("name") or node["address"])
-        entities.append(SteinelPresenceBinarySensor(coordinator, unicast, node))
-        if unicast not in started:
-            started.add(unicast)
-            hass.async_create_task(coordinator.async_refresh())
-    async_add_entities(entities)
+SCAN_INTERVAL = timedelta(seconds=30)
 
 
-class SteinelPresenceBinarySensor(CoordinatorEntity[SteinelSensorCoordinator], BinarySensorEntity):
+async def async_setup_entry(
+    hass,
+    entry: SteinelConfigEntry,
+    async_add_entities: AddConfigEntryEntitiesCallback,
+) -> None:
+    """Create presence sensors for Sensor Extension elements."""
+    coordinator = entry.runtime_data
+    async_add_entities(
+        SteinelPresenceSensor(coordinator, element)
+        for element in coordinator.elements
+        if (STEINEL_COMPANY_ID, MODEL_STEINEL_SENSOR_EXTENSION) in element.vendor_models
+    )
+
+
+class SteinelPresenceSensor(BinarySensorEntity):
+    """A polled presence state."""
+
     _attr_has_entity_name = True
-    _attr_translation_key = "presence"
+    _attr_name = "Presence"
     _attr_device_class = BinarySensorDeviceClass.OCCUPANCY
+    _attr_should_poll = True
 
-    def __init__(self, coordinator: SteinelSensorCoordinator, unicast: int, node: dict) -> None:
-        super().__init__(coordinator)
-        address = node["address"]
-        self._attr_unique_id = f"{DOMAIN}_{address}_presence"
-        self._attr_device_info = DeviceInfo(
-            identifiers={(DOMAIN, address)},
-            connections={(CONNECTION_BLUETOOTH, address)},
-            name=node.get("name") or f"STEINEL {address}",
-            manufacturer=MANUFACTURER,
-            model=f"Mesh node 0x{unicast:04X}",
-        )
+    def __init__(
+        self, coordinator: SteinelCoordinator, element: ElementComposition
+    ) -> None:
+        self.coordinator = coordinator
+        self.element = element
+        self._attr_unique_id = f"{coordinator.address}_{element.address:04x}_presence"
+        self._attr_device_info = coordinator.device_info
+        self._attr_is_on = None
+        self._attr_available = False
 
-    @property
-    def available(self) -> bool:
-        return super().available and bool(self.coordinator.data) and "PRESENCE_DETECTED" in self.coordinator.data
-
-    @property
-    def is_on(self) -> bool | None:
-        if not self.coordinator.data:
-            return None
-        value = self.coordinator.data.get("PRESENCE_DETECTED")
-        return None if value is None else value.value
+    async def async_update(self) -> None:
+        """Read the Presence Detected property."""
+        try:
+            raw = await self.coordinator.async_get_sensor(
+                self.element.address, SENSOR_PROPERTIES["presence"]
+            )
+        except Exception:
+            self._attr_available = False
+            return
+        value = decode_sensor_value("presence", raw)
+        self._attr_is_on = value.value if isinstance(value.value, bool) else None
+        self._attr_available = self._attr_is_on is not None
+        self._attr_extra_state_attributes = {"raw": value.raw.hex(" ").upper()}

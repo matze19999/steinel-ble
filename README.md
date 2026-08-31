@@ -1,172 +1,214 @@
 <p align="center">
-  <img src="https://raw.githubusercontent.com/matze19999/steinel-ble/main/custom_components/steinel_ble/brand/logo.png" alt="STEINEL" height="80">
+  <img src="https://raw.githubusercontent.com/matze19999/steinel-ble/main/steinel.png" alt="STEINEL" height="80">
 </p>
 
 <h1 align="center">STEINEL Connect BLE for Home Assistant</h1>
 
 <p align="center">
   <a href="https://github.com/hacs/integration"><img src="https://img.shields.io/badge/HACS-Custom-41BDF5.svg" alt="HACS Custom"></a>
-  <a href="https://github.com/matze19999/steinel-ble/actions/workflows/validate.yml"><img src="https://github.com/matze19999/steinel-ble/actions/workflows/validate.yml/badge.svg" alt="Validate"></a>
   <a href="https://github.com/matze19999/steinel-ble/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="MIT License"></a>
 </p>
 
-A Home Assistant custom integration for **STEINEL Connect** Bluetooth Mesh
-lamps (e.g. the L 845 C) - discovery, setup/provisioning, on/off, brightness
-(plus colour temperature/colour where the lamp supports it), firmware
-updates and a physical identify button, all over **Home Assistant Bluetooth
-proxies** as well as local adapters.
+A Home Assistant custom integration for local control of **STEINEL Connect**
+Bluetooth Mesh devices, including the L 845 C. It supports discovery,
+provisioning, on/off and brightness control, and automatically exposes colour
+temperature, colour and sensor features when the device implements the
+required models.
 
-The protocol this integration speaks was reverse-engineered from the
-official STEINEL Connect Android app and validated against real hardware
-(a STEINEL L 845 C). It is not affiliated with, endorsed by, or built from
-any official STEINEL SDK - see [Legal](#legal) below.
+Communication works through Home Assistant Bluetooth adapters and **ESPHome
+Bluetooth proxies**. No cloud account or STEINEL gateway is required.
+
+The protocol was independently reverse-engineered from the official STEINEL
+Connect Android app and validated against real hardware. This project is not
+affiliated with or endorsed by STEINEL and does not use an official STEINEL
+SDK. See [Legal](#legal).
 
 ## Features
 
-- **Discovery** - lamps advertising STEINEL's Bluetooth manufacturer id are
-  found automatically by Home Assistant and offered for setup under
-  *Settings → Devices & services*.
-- **Setup / provisioning** - a factory-reset lamp is provisioned into a
-  Home-Assistant-owned Bluetooth Mesh network (a fresh random NetKey/AppKey
-  is generated on first use). The shared AppKey is then bound to whichever
-  light models the lamp actually supports (Generic OnOff, Light Lightness,
-  Light CTL, Light HSL are all attempted; only the ones that succeed are
-  exposed), so the integration adapts to what a given lamp can actually do.
-- **On/off and brightness** - exposed as a standard `light` entity. Colour
-  temperature (Light CTL) or HS colour (Light HSL) are exposed too,
-  automatically, wherever those models bound successfully.
-- **Firmware update** - an `update` entity per lamp using the fully
-  validated Nordic Secure DFU path (see [Firmware update](#firmware-update)
-  for why this needs a small one-time manual step rather than being fully
-  automatic).
-- **Identify** - a button entity that blinks the lamp (proprietary GATT
-  opcode `0x17`), also used automatically while confirming a device during
-  setup.
-- **Factory reset** - a per-lamp button entity (proprietary GATT opcode
-  `0xE5`) that erases the lamp's Bluetooth Mesh keys and removes it from
-  Home Assistant. Disabled by default (enable it explicitly on the entity
-  first) since there is no built-in per-press confirmation dialog for
-  button entities in Home Assistant.
-- **Works over Bluetooth proxies** - all Bluetooth communication goes
-  through Home Assistant's `bluetooth` integration and
+- **Bluetooth discovery** - devices advertising the Bluetooth Mesh
+  Provisioning or Proxy service are discovered automatically by Home
+  Assistant.
+- **PB-GATT provisioning** - an unprovisioned lamp receives a randomly
+  generated NetKey, AppKey and Device Key owned by its Home Assistant config
+  entry.
+- **Automatic recovery from another mesh** - if a lamp is already provisioned
+  into an unknown Bluetooth Mesh network, the integration attempts STEINEL's
+  proprietary Global Reset and then provisions the device without requiring
+  the old mesh keys.
+- **Adaptive model support** - Composition Data is read after provisioning and
+  the AppKey is bound only to models actually present on the device. Supported
+  models include Generic OnOff, Light Lightness, Light LC, Light CTL and Light
+  HSL.
+- **Standard Home Assistant light entities** - on/off and brightness are
+  available where supported. Colour temperature and HS colour are exposed
+  automatically for compatible lamps.
+- **Remembered brightness** - turning a lamp off and back on restores the last
+  brightness acknowledged by Home Assistant, including devices that otherwise
+  return to their configured 100% OnPowerUp level.
+- **Optional sensor entities** - devices with the STEINEL Sensor Extension
+  model can expose presence, motion, people count, temperature, humidity, CO₂,
+  VOC, noise, air pressure, dew point, and time-since-motion/presence values.
+  Unsupported properties remain unavailable.
+- **Bluetooth proxy support** - connections use Home Assistant's Bluetooth
+  stack and
   [`bleak-retry-connector`](https://github.com/Bluetooth-Devices/bleak-retry-connector),
-  the same mechanism every other HA Bluetooth integration uses, and reuses
-  a lamp's connection for a short idle window so consecutive commands don't
-  each pay the full BLE connect cost.
+  so an ESPHome proxy such as the XIAO ESP32S3 can provide the BLE connection.
+- **Acknowledged state updates** - acknowledged Bluetooth Mesh status messages
+  update the entity state in Home Assistant.
 
 ## Installation
 
-This repository is **not** (yet) in the default HACS store, but it can be
-added directly as a HACS *custom repository* - no separate download needed.
+This repository is not currently part of the default HACS store. Add it as a
+HACS custom repository or install it manually.
 
 ### HACS (recommended)
 
 [![Add to HACS](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=matze19999&repository=steinel-ble&category=integration)
 
-Click the badge above (requires [HACS](https://hacs.xyz) to already be
-installed and the *My Home Assistant* integration enabled), or add it by
-hand:
+The badge requires [HACS](https://hacs.xyz) and the *My Home Assistant*
+integration. Alternatively:
 
-1. HACS → the "⋮" menu (top right) → *Custom repositories*.
-2. Repository: `https://github.com/matze19999/steinel-ble`, type:
-   *Integration* → *Add*.
-3. Find "STEINEL Connect BLE" in HACS and install it.
-4. Restart Home Assistant.
+1. Open HACS and select the **⋮** menu in the top-right corner.
+2. Select *Custom repositories*.
+3. Add `https://github.com/matze19999/steinel-ble` as type *Integration*.
+4. Find and install **STEINEL Connect Bluetooth Mesh**.
+5. Restart Home Assistant.
 
-The integration then shows up under *Settings → Devices & services → Add
-integration → STEINEL Connect BLE* (or is offered automatically once a
-STEINEL lamp is discovered).
+The integration is then available under *Settings → Devices & services → Add
+integration → STEINEL Connect Bluetooth Mesh*. Home Assistant may also offer
+it automatically after discovering a compatible device.
 
 ### Manual
 
-Copy `custom_components/steinel_ble` from this repository into your Home
-Assistant configuration's `custom_components` directory, then restart Home
-Assistant.
+Copy `custom_components/steinel_ble` into the `custom_components` directory of
+your Home Assistant configuration and restart Home Assistant.
 
-## Setting up
+## Requirements
 
-1. *Settings → Devices & services*. A factory-reset/unprovisioned STEINEL
-   lamp in range is usually offered automatically ("Discovered"); otherwise
-   use *Add integration → STEINEL Connect BLE → Discover a new
-   (factory-reset) lamp*.
-2. The lamp blinks (identify) while you confirm its name.
-3. It is provisioned into a new, Home-Assistant-owned mesh network and its
-   light models are bound automatically.
-4. For every further lamp, use the integration's *Configure → Add a
-   device* (there is only ever one hub/mesh network per Home Assistant
-   instance; further lamps join it rather than creating new integration
-   entries).
+- Home Assistant 2026.8 or newer
+- A connectable local Bluetooth adapter or ESPHome Bluetooth proxy in range
+- A compatible STEINEL Connect Bluetooth Mesh device
 
-If you already have lamps provisioned into a Bluetooth Mesh network from
-another tool, use *Configure → Import an existing mesh* and paste its
-NetKey/AppKey/node JSON instead of provisioning from scratch.
+If the device requires a 16-byte Static OOB key, enter its 32 hexadecimal
+characters during setup. Otherwise leave the field empty to use No OOB
+provisioning.
 
-> **Note:** only one provisioner should actively send on a given mesh
-> NetKey's source address at a time. If another tool/app still manages the
-> same mesh, stop using it against the same network once imported - two
-> senders reusing the same source address can produce duplicate sequence
-> numbers, which nodes silently drop as a replay.
+## Setting up a device
 
-## Firmware update
+1. Power the STEINEL device and keep it within reliable Bluetooth range of the
+   adapter or proxy.
+2. Open *Settings → Devices & services*. Select the discovered device, or use
+   *Add integration → STEINEL Connect Bluetooth Mesh* and enter its Bluetooth
+   address.
+3. Confirm the device and optionally enter its Static OOB key.
+4. The integration provisions the device, reads its Composition Data, adds the
+   AppKey, binds its supported models and creates the applicable entities.
 
-STEINEL's online firmware catalog links firmware records to an internal
-product UUID, and there is no confirmed way to resolve the numeric product
-id a lamp advertises over BLE to that UUID without an undocumented,
-unpublished companion endpoint. Rather than guess at that mapping for
-something as consequential as a DFU firmware flash, each lamp's firmware
-source is configured explicitly instead: *Settings → Devices & services →
-STEINEL Connect BLE → Configure → Configure a firmware update source*, then
-provide:
+Each configured lamp stores its own Bluetooth Mesh credentials in its Home
+Assistant config entry. Include Home Assistant's `.storage` configuration in
+backups: losing the NetKey, AppKey or Device Key also loses authenticated
+access to the provisioned device.
 
-- the package URL (a direct `https://` download) or a local file path,
-- the expected version (`MAJOR.MINOR.PATCH`),
-- the expected hardware revision and product id (both visible in the
-  device's Bluetooth advertisement),
-- optionally the expected SHA-256, checked before anything is flashed.
+### Device already belongs to another mesh
 
-The `update` entity then behaves like any other: it shows "update
-available" once the installed version (read passively from the lamp's own
-advertisement) differs from the configured target, and pressing *Install*
-downloads, verifies, and applies the update through the Nordic Secure DFU
-protocol the lamp's bootloader speaks.
+The integration can reset a provisioned STEINEL device without knowing its
+existing mesh keys. The lamp only accepts this command during a short window
+after mains power is applied, and it must not already be connected to another
+Bluetooth client.
+
+When Home Assistant discovers a provisioned device, the setup dialog displays
+the required preparation steps:
+
+1. Completely close the STEINEL app and any other app that may connect to the
+   lamp. Merely leaving the app in the background may not be sufficient.
+2. Briefly disconnect the lamp from mains power.
+3. Restore power and submit the Home Assistant setup form immediately.
+4. Home Assistant attempts the Global Reset, waits for the Mesh Provisioning
+   service and then continues setup automatically.
+
+If the reset window was missed, remove or reload the failed integration entry
+and repeat the power-cycle procedure. Do not open the STEINEL app during this
+process.
+
+## How it works
+
+After provisioning, the integration:
+
+1. reconnects through the best connectable Bluetooth path;
+2. configures the Mesh Proxy filter for the node;
+3. reads the node's Composition Data;
+4. adds the application key;
+5. binds supported Generic, Light and known STEINEL vendor models; and
+6. creates entities only for applicable elements and model families.
+
+Both outgoing and incoming segmented lower-transport messages are supported.
+Normal control uses acknowledged access messages so returned device states can
+be reflected in Home Assistant.
+
+## Troubleshooting
+
+Enable debug logging when investigating a connection, reset or provisioning
+problem:
+
+```yaml
+logger:
+  logs:
+    custom_components.steinel_ble: debug
+```
+
+Bluetooth Mesh Provisioning and Proxy advertisements can take time to change
+after provisioning or reset. The integration clears a stale GATT service cache
+where supported and retries setup automatically.
+
+For a failed automatic reset, first verify that:
+
+- the STEINEL mobile app is fully closed;
+- no phone or other Bluetooth client is connected to the lamp;
+- the lamp was power-cycled immediately before setup was confirmed;
+- the Bluetooth proxy has a free connection slot and a reliable signal; and
+- the device is still visible to Home Assistant as connectable.
 
 ## Limitations
 
-- One STEINEL mesh hub per Home Assistant instance. If you also use the
-  official STEINEL Connect app, keep it on a separate mesh network - a lamp
-  can only belong to one Bluetooth Mesh NetKey at a time, and moving it to
-  a different network requires a factory reset.
-- Light LC (occupancy/daylight sensing configuration), STEINEL's vendor
-  Light-LC/Sensor model extensions, Scenes and Mesh BLOB/DFU firmware
-  updates are not exposed as entities yet.
-- Only unsegmented Generic/Light Mesh Access messages are used for normal
-  operation; the Config messages that need segmentation (AppKey Add, Model
-  App Bind) are supported during setup.
-- Global Reset and firmware flashing are deliberately conservative: no
-  automatic online firmware catalog lookup (see above), and the factory
-  reset button is disabled by default.
+- Automatic Global Reset depends on a short device-specific startup window and
+  may require repeating the power-cycle procedure.
+- The L 845 C is the primary hardware used for real-device validation. Other
+  devices are detected by their advertised services and model composition, but
+  not every STEINEL product and firmware version has been tested.
+- Sensor support depends on STEINEL's vendor Sensor Extension model. Entities
+  for properties not implemented by a device remain unavailable.
+- Scene management, Light LC parameter configuration, firmware updates and
+  Bluetooth Mesh BLOB/DFU are not currently exposed.
+- There is no import workflow for an existing mesh. A device is either
+  provisioned as new or reset from its previous network during setup.
+
+## Development
+
+Run the local checks with:
+
+```bash
+ruff check custom_components tests
+ruff format --check custom_components tests
+pytest
+```
 
 ## Contributing
 
-Issues and pull requests are welcome - in particular, real-world reports
-from other STEINEL Connect products (not just the L 845 C this was
-developed against) are very helpful, since lamp capabilities are
-auto-detected but the underlying Mesh/vendor model behaviour has only been
-validated against one product line so far.
+Issues and pull requests are welcome. Reports from STEINEL Connect products
+other than the L 845 C are particularly useful. Please include the model,
+firmware version, discovered Composition Data and relevant debug logs where
+possible, but never publish mesh keys or other credentials.
 
 ## Legal
 
-This is an independent, community-built integration. It is **not**
-affiliated with, endorsed by, or sponsored by STEINEL Vertrieb GmbH or any
-of its affiliates. "STEINEL" and the STEINEL logo are trademarks of their
-respective owner and are used in this repository (`custom_components/steinel_ble/brand/`)
-solely to identify the product this integration interoperates with, for
-Home Assistant's brand display - see Home Assistant's
-[brands repository image specification](https://github.com/home-assistant/brands#image-specification)
-for the same policy applied to every third-party integration in Home
-Assistant. No STEINEL software, firmware or copyrighted application assets
-are included in this repository; the protocol implementation is this
-project's own, independent work based on reverse-engineering for
-interoperability purposes.
+This is an independent, community-built integration. It is **not** affiliated
+with, endorsed by, or sponsored by STEINEL Vertrieb GmbH or any of its
+affiliates. "STEINEL" and the STEINEL logo are trademarks of their respective
+owner and are used solely to identify the products with which this integration
+interoperates.
+
+No STEINEL software, firmware or copyrighted application assets are included
+in this repository. The protocol implementation is independent work based on
+reverse-engineering for interoperability purposes.
 
 Licensed under the [MIT License](https://github.com/matze19999/steinel-ble/blob/main/LICENSE).

@@ -1,10 +1,7 @@
-"""STEINEL Mesh light entity: on/off, brightness, and (if supported by the
-lamp) colour temperature or HS colour, auto-detected during setup by which
-Mesh models successfully bound (see coordinator.SteinelMeshHub.async_bind_capabilities)."""
+"""Light entities for Steinel Connect Mesh devices."""
 
 from __future__ import annotations
 
-import logging
 from typing import Any
 
 from homeassistant.components.light import (
@@ -14,159 +11,142 @@ from homeassistant.components.light import (
     ColorMode,
     LightEntity,
 )
-from homeassistant.config_entries import ConfigEntry
-from homeassistant.core import HomeAssistant
-from homeassistant.exceptions import HomeAssistantError
-from homeassistant.helpers.device_registry import CONNECTION_BLUETOOTH, DeviceInfo
-from homeassistant.helpers.entity_platform import AddEntitiesCallback
-from homeassistant.helpers.update_coordinator import CoordinatorEntity
+from homeassistant.core import callback
+from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
+from . import SteinelConfigEntry
 from .const import (
-    CAPABILITY_CTL,
-    CAPABILITY_HSL,
-    CAPABILITY_LIGHTNESS,
-    CAPABILITY_ONOFF,
     CTL_TEMP_MAX_KELVIN,
     CTL_TEMP_MIN_KELVIN,
-    DOMAIN,
-    MANUFACTURER,
+    MODEL_GENERIC_ONOFF_SERVER,
+    MODEL_LIGHT_CTL_SERVER,
+    MODEL_LIGHT_HSL_SERVER,
+    MODEL_LIGHT_LC_SERVER,
+    MODEL_LIGHT_LIGHTNESS_SERVER,
 )
-from .coordinator import SteinelLightCoordinator, SteinelMeshHub
-from .protocol import ProtocolError
-
-_LOGGER = logging.getLogger(__name__)
+from .coordinator import SteinelCoordinator
+from .mesh import ElementComposition
 
 
-def _to_lightness(brightness_255: int) -> int:
-    if brightness_255 >= 255:
-        return 65535
-    return max(0, min(65535, round(brightness_255 * 65535 / 255)))
-
-
-def _to_brightness(lightness: int) -> int:
-    if lightness >= 65535:
-        return 255
-    return max(0, min(255, round(lightness * 255 / 65535)))
-
-
-def _to_hs_raw(hue: float, saturation: float) -> tuple[int, int]:
-    return (
-        max(0, min(65535, round(hue / 360 * 65535))),
-        max(0, min(65535, round(saturation / 100 * 65535))),
-    )
-
-
-def _from_hs_raw(hue_raw: int, saturation_raw: int) -> tuple[float, float]:
-    return hue_raw / 65535 * 360, saturation_raw / 65535 * 100
-
-
-async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_entities: AddEntitiesCallback) -> None:
-    hub: SteinelMeshHub = hass.data[DOMAIN][entry.entry_id]
-    entities: list[SteinelLight] = []
-
-    for unicast_key, node in hub.network.nodes.items():
-        capabilities: dict[str, bool] = node.get("capabilities") or {}
-        if not capabilities.get(CAPABILITY_ONOFF):
-            continue
-        unicast = int(unicast_key, 16)
-        coordinator = SteinelLightCoordinator(
-            hass, hub, unicast, node["address"], node.get("name") or node["address"], capabilities
+async def async_setup_entry(
+    hass,
+    entry: SteinelConfigEntry,
+    async_add_entities: AddConfigEntryEntitiesCallback,
+) -> None:
+    """Create one entity for each element exposing a light server."""
+    coordinator = entry.runtime_data
+    entities = [
+        SteinelMeshLight(coordinator, element)
+        for element in coordinator.elements
+        if (
+            element.address == coordinator.entry.data["unicast_address"]
+            and MODEL_GENERIC_ONOFF_SERVER in element.sig_models
         )
-        entities.append(SteinelLight(coordinator, node, capabilities))
-        hass.async_create_task(coordinator.async_refresh())
-
+        or element.sig_models
+        & {
+            MODEL_LIGHT_LIGHTNESS_SERVER,
+            MODEL_LIGHT_CTL_SERVER,
+            MODEL_LIGHT_HSL_SERVER,
+        }
+    ]
     async_add_entities(entities)
 
 
-class SteinelLight(CoordinatorEntity[SteinelLightCoordinator], LightEntity):
+class SteinelMeshLight(LightEntity):
+    """A light element controlled through the Mesh Proxy service."""
+
     _attr_has_entity_name = True
-    _attr_name = None
+    _attr_translation_key = "light"
 
-    def __init__(self, coordinator: SteinelLightCoordinator, node: dict[str, Any], capabilities: dict[str, bool]) -> None:
-        super().__init__(coordinator)
-        self._unicast = coordinator.unicast
-        self._address = coordinator.address
-        self._attr_unique_id = f"{DOMAIN}_{self._address}_light"
-        self._capable_lightness = bool(capabilities.get(CAPABILITY_LIGHTNESS))
-        self._capable_ctl = bool(capabilities.get(CAPABILITY_CTL))
-        self._capable_hsl = bool(capabilities.get(CAPABILITY_HSL))
-
-        modes: set[ColorMode] = set()
-        if self._capable_hsl:
-            modes.add(ColorMode.HS)
-        if self._capable_ctl:
-            modes.add(ColorMode.COLOR_TEMP)
-        if not modes and self._capable_lightness:
-            modes.add(ColorMode.BRIGHTNESS)
-        if not modes:
-            modes.add(ColorMode.ONOFF)
-        self._attr_supported_color_modes = modes
-        self._current_color_mode = next(iter(modes))
-        if self._capable_ctl:
+    def __init__(
+        self, coordinator: SteinelCoordinator, element: ElementComposition
+    ) -> None:
+        self.coordinator = coordinator
+        self.element = element
+        self._attr_unique_id = f"{coordinator.address}_{element.address:04x}_light"
+        self._attr_device_info = coordinator.device_info
+        if MODEL_LIGHT_HSL_SERVER in element.sig_models:
+            self._attr_color_mode = ColorMode.HS
+            self._attr_supported_color_modes = {ColorMode.HS}
+        elif MODEL_LIGHT_CTL_SERVER in element.sig_models:
+            self._attr_color_mode = ColorMode.COLOR_TEMP
+            self._attr_supported_color_modes = {ColorMode.COLOR_TEMP}
             self._attr_min_color_temp_kelvin = CTL_TEMP_MIN_KELVIN
             self._attr_max_color_temp_kelvin = CTL_TEMP_MAX_KELVIN
-
-        self._attr_device_info = DeviceInfo(
-            identifiers={(DOMAIN, self._address)},
-            connections={(CONNECTION_BLUETOOTH, self._address)},
-            name=node.get("name") or f"STEINEL {self._address}",
-            manufacturer=MANUFACTURER,
-            model=f"Mesh node 0x{self._unicast:04X}",
-        )
+        elif MODEL_LIGHT_LIGHTNESS_SERVER in element.sig_models:
+            self._attr_color_mode = ColorMode.BRIGHTNESS
+            self._attr_supported_color_modes = {ColorMode.BRIGHTNESS}
+        else:
+            self._attr_color_mode = ColorMode.ONOFF
+            self._attr_supported_color_modes = {ColorMode.ONOFF}
 
     @property
-    def color_mode(self) -> ColorMode:
-        return self._current_color_mode
+    def available(self) -> bool:
+        """Return whether the node has a usable proxy connection."""
+        return self.coordinator.available
 
     @property
     def is_on(self) -> bool | None:
-        return self.coordinator.data.onoff if self.coordinator.data else None
+        """Return the last acknowledged on/off state."""
+        return self.coordinator.is_on.get(self.element.address)
 
     @property
     def brightness(self) -> int | None:
-        data = self.coordinator.data
-        if data is None:
-            return None
-        raw = data.lightness if data.lightness is not None else data.ctl_lightness if data.ctl_lightness is not None else data.hsl_lightness
-        return None if raw is None else _to_brightness(raw)
+        """Return the last acknowledged lightness."""
+        return self.coordinator.brightness.get(self.element.address)
 
     @property
     def color_temp_kelvin(self) -> int | None:
-        data = self.coordinator.data
-        return None if data is None or data.ctl_temperature is None else data.ctl_temperature
+        """Return the last acknowledged CTL temperature."""
+        return self.coordinator.color_temperature.get(self.element.address)
 
     @property
     def hs_color(self) -> tuple[float, float] | None:
-        data = self.coordinator.data
-        if data is None or data.hue is None or data.saturation is None:
-            return None
-        return _from_hs_raw(data.hue, data.saturation)
+        """Return the last acknowledged HSL hue and saturation."""
+        return self.coordinator.hs_color.get(self.element.address)
 
     async def async_turn_on(self, **kwargs: Any) -> None:
-        try:
-            if ATTR_HS_COLOR in kwargs and self._capable_hsl:
-                hue_raw, sat_raw = _to_hs_raw(*kwargs[ATTR_HS_COLOR])
-                lightness = _to_lightness(kwargs.get(ATTR_BRIGHTNESS, self.brightness or 255))
-                state = await self.coordinator.hub.async_set_hsl(self._unicast, self._address, lightness, hue_raw, sat_raw)
-                self._current_color_mode = ColorMode.HS
-            elif ATTR_COLOR_TEMP_KELVIN in kwargs and self._capable_ctl:
-                kelvin = max(CTL_TEMP_MIN_KELVIN, min(CTL_TEMP_MAX_KELVIN, kwargs[ATTR_COLOR_TEMP_KELVIN]))
-                lightness = _to_lightness(kwargs.get(ATTR_BRIGHTNESS, self.brightness or 255))
-                state = await self.coordinator.hub.async_set_ctl(self._unicast, self._address, lightness, kelvin)
-                self._current_color_mode = ColorMode.COLOR_TEMP
-            elif ATTR_BRIGHTNESS in kwargs and self._capable_lightness:
-                state = await self.coordinator.hub.async_set_lightness(
-                    self._unicast, self._address, _to_lightness(kwargs[ATTR_BRIGHTNESS])
-                )
-            else:
-                state = await self.coordinator.hub.async_set_onoff(self._unicast, self._address, True)
-        except ProtocolError as exc:
-            raise HomeAssistantError(f"could not switch on {self.entity_id}: {exc}") from exc
-        await self.coordinator.async_apply(state)
+        """Turn on this element and optionally set brightness."""
+        brightness = kwargs.get(
+            ATTR_BRIGHTNESS,
+            self.coordinator.brightness.get(self.element.address, 255),
+        )
+        if ATTR_HS_COLOR in kwargs:
+            hue, saturation = kwargs[ATTR_HS_COLOR]
+            await self.coordinator.async_set_hsl(
+                self.element.address, brightness, hue, saturation
+            )
+            return
+        if ATTR_COLOR_TEMP_KELVIN in kwargs:
+            kelvin = max(
+                CTL_TEMP_MIN_KELVIN,
+                min(CTL_TEMP_MAX_KELVIN, kwargs[ATTR_COLOR_TEMP_KELVIN]),
+            )
+            await self.coordinator.async_set_ctl(
+                self.element.address, brightness, kelvin
+            )
+            return
+        await self.coordinator.async_set_light(
+            self.element.address,
+            on=True,
+            brightness=kwargs.get(ATTR_BRIGHTNESS),
+            use_lc=MODEL_LIGHT_LC_SERVER in self.element.sig_models,
+        )
 
     async def async_turn_off(self, **kwargs: Any) -> None:
-        try:
-            state = await self.coordinator.hub.async_set_onoff(self._unicast, self._address, False)
-        except ProtocolError as exc:
-            raise HomeAssistantError(f"could not switch off {self.entity_id}: {exc}") from exc
-        await self.coordinator.async_apply(state)
+        """Turn off this element."""
+        await self.coordinator.async_set_light(
+            self.element.address,
+            on=False,
+            use_lc=MODEL_LIGHT_LC_SERVER in self.element.sig_models,
+        )
+
+    async def async_added_to_hass(self) -> None:
+        """Subscribe to acknowledged Mesh state updates."""
+        self.async_on_remove(
+            self.coordinator.async_add_listener(self._handle_coordinator_update)
+        )
+
+    @callback
+    def _handle_coordinator_update(self) -> None:
+        self.async_write_ha_state()

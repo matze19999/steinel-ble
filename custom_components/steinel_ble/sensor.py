@@ -30,7 +30,7 @@ from .mesh import ElementComposition
 from .sensor_protocol import SENSOR_PROPERTIES
 
 _META: dict[str, tuple[str | None, str | None]] = {
-    "motion": (None, PERCENTAGE),
+    "illuminance": (SensorDeviceClass.ILLUMINANCE, "lx"),
     "people_count": (None, None),
     "temperature": (SensorDeviceClass.TEMPERATURE, UnitOfTemperature.CELSIUS),
     "precise_temperature": (SensorDeviceClass.TEMPERATURE, UnitOfTemperature.CELSIUS),
@@ -59,7 +59,7 @@ async def async_setup_entry(
         for name, property_id in SENSOR_PROPERTIES.items()
         if name
         in entry.data.get(CONF_SENSOR_PROPERTIES, {}).get(str(element.address), [])
-        if name != "presence"
+        if name not in ("presence", "motion")
     )
 
 

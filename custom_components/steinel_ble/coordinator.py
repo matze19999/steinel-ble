@@ -48,6 +48,7 @@ from .const import (
     CONF_RESTORE_BRIGHTNESS,
     CONF_SENSOR_INTERVAL,
     CONF_SENSOR_PROPERTIES,
+    CONF_SENSOR_SCHEMA_VERSION,
     CONF_SEQUENCE,
     CONF_STATIC_OOB,
     CONF_UNICAST_ADDRESS,
@@ -87,16 +88,24 @@ from .const import (
     OP_LIGHT_HSL_STATUS,
     OP_LIGHT_LC_ONOFF_SET,
     OP_LIGHT_LC_ONOFF_STATUS,
+    OP_LIGHT_LC_PROPERTY_GET,
+    OP_LIGHT_LC_PROPERTY_SET,
+    OP_LIGHT_LC_PROPERTY_STATUS,
     OP_LIGHT_LIGHTNESS_GET,
     OP_LIGHT_LIGHTNESS_SET,
     OP_LIGHT_LIGHTNESS_STATUS,
+    SENSOR_SCHEMA_VERSION,
     STEINEL_COMPANY_ID,
 )
 from .direct import DirectResetClient
 from .gatt import MeshGattTransport
 from .mesh import ElementComposition, MeshNode
 from .provisioning import Provisioner, ProvisioningError
-from .sensor_protocol import SENSOR_PROPERTIES, decode_sensor_value
+from .sensor_protocol import (
+    SENSOR_PROPERTIES,
+    decode_sensor_value,
+    strip_property_prefix,
+)
 from .state_store import restore_light_states, serialize_light_states
 
 _LOGGER = logging.getLogger(__name__)
@@ -180,6 +189,13 @@ class SteinelCoordinator:
         )
         return connected or self.advertisement_available
 
+    def supports_sensor_lighting(self, address: int) -> bool:
+        """Return whether an element has motion and ambient-light sensing."""
+        properties = set(
+            self.entry.data.get(CONF_SENSOR_PROPERTIES, {}).get(str(address), [])
+        )
+        return {"motion", "illuminance"}.issubset(properties)
+
     async def async_setup(self) -> None:
         """Provision when needed, then connect and configure the node."""
         self._start_advertisement_monitor()
@@ -213,7 +229,10 @@ class SteinelCoordinator:
                 self.elements = self._deserialize_elements(
                     self.entry.data[CONF_ELEMENTS]
                 )
-            if CONF_SENSOR_PROPERTIES not in self.entry.data:
+            if (
+                self.entry.data.get(CONF_SENSOR_SCHEMA_VERSION, 0)
+                < SENSOR_SCHEMA_VERSION
+            ):
                 await self._async_detect_sensor_properties()
             await self._async_refresh_light_states()
             self.available = True
@@ -681,7 +700,36 @@ class SteinelCoordinator:
                 if decode_sensor_value(name, raw).value is not None:
                     names.append(name)
             detected[str(element.address)] = names
-        self._update_entry({CONF_SENSOR_PROPERTIES: detected})
+        self._update_entry(
+            {
+                CONF_SENSOR_PROPERTIES: detected,
+                CONF_SENSOR_SCHEMA_VERSION: SENSOR_SCHEMA_VERSION,
+            }
+        )
+
+    async def async_get_lc_property(self, address: int, property_id: int) -> bytes:
+        """Read a standard Light LC property."""
+        node = await self.async_ensure_connected()
+        _src, parameters = await node.request(
+            address,
+            OP_LIGHT_LC_PROPERTY_GET,
+            property_id.to_bytes(2, "little"),
+            OP_LIGHT_LC_PROPERTY_STATUS,
+        )
+        return strip_property_prefix(property_id, parameters)
+
+    async def async_set_lc_property(
+        self, address: int, property_id: int, value: bytes
+    ) -> None:
+        """Set a standard Light LC property and wait for confirmation."""
+        node = await self.async_ensure_connected()
+        await node.request(
+            address,
+            OP_LIGHT_LC_PROPERTY_SET,
+            property_id.to_bytes(2, "little") + value,
+            OP_LIGHT_LC_PROPERTY_STATUS,
+        )
+        self._arm_idle_disconnect()
 
     async def async_ensure_connected(self) -> MeshNode:
         """Reconnect the proxy before a command if necessary."""
@@ -846,7 +894,7 @@ class SteinelCoordinator:
                 timeout=timeout
                 or float(self._option(CONF_COMMAND_TIMEOUT, DEFAULT_COMMAND_TIMEOUT)),
             )
-            return parameters
+            return strip_property_prefix(property_id, parameters)
         finally:
             self._arm_idle_disconnect()
 
@@ -920,6 +968,8 @@ class SteinelCoordinator:
 
     @callback
     def _access_received(self, src: int, opcode: int, parameters: bytes) -> None:
+        if opcode >= 0xC00000 and opcode & 0xFFFF == 0x6305:
+            self._sensor_extension_received(src, opcode, parameters)
         if opcode in (OP_GENERIC_ONOFF_STATUS, OP_LIGHT_LC_ONOFF_STATUS) and parameters:
             self.is_on[src] = bool(parameters[0])
         elif opcode == OP_LIGHT_LIGHTNESS_STATUS and len(parameters) >= 2:
@@ -940,6 +990,22 @@ class SteinelCoordinator:
             self.is_on[src] = level > 0
         self._schedule_state_persist()
         self._notify()
+
+    @callback
+    def _sensor_extension_received(
+        self, src: int, opcode: int, parameters: bytes
+    ) -> None:
+        """Apply unsolicited Sensor Extension reports without polling."""
+        vendor_opcode = opcode >> 16
+        if vendor_opcode not in (0xD0, 0xD1, 0xDC) or len(parameters) < 3:
+            return
+        property_id = int.from_bytes(parameters[:2], "little")
+        for name, known_id in SENSOR_PROPERTIES.items():
+            if property_id == known_id:
+                self.sensor_values[(src, name)] = decode_sensor_value(
+                    name, parameters[2:]
+                )
+                break
 
     @callback
     def async_add_listener(self, listener: Callable[[], None]) -> Callable[[], None]:

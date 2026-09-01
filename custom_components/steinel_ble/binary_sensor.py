@@ -27,28 +27,34 @@ async def async_setup_entry(
     """Create presence sensors for Sensor Extension elements."""
     coordinator = entry.runtime_data
     async_add_entities(
-        SteinelPresenceSensor(coordinator, element)
+        SteinelMotionSensor(coordinator, element, name)
         for element in coordinator.elements
         if (STEINEL_COMPANY_ID, MODEL_STEINEL_SENSOR_EXTENSION) in element.vendor_models
-        and "presence"
+        for name in ("motion", "presence")
+        if name
         in entry.data.get(CONF_SENSOR_PROPERTIES, {}).get(str(element.address), [])
     )
 
 
-class SteinelPresenceSensor(BinarySensorEntity):
-    """A polled presence state."""
+class SteinelMotionSensor(BinarySensorEntity):
+    """A motion or presence state reported by the sensor extension."""
 
     _attr_has_entity_name = True
-    _attr_name = "Presence"
-    _attr_device_class = BinarySensorDeviceClass.OCCUPANCY
     _attr_should_poll = False
 
     def __init__(
-        self, coordinator: SteinelCoordinator, element: ElementComposition
+        self, coordinator: SteinelCoordinator, element: ElementComposition, name: str
     ) -> None:
         self.coordinator = coordinator
         self.element = element
-        self._attr_unique_id = f"{coordinator.address}_{element.address:04x}_presence"
+        self.name_key = name
+        self._attr_name = name.title()
+        self._attr_device_class = (
+            BinarySensorDeviceClass.MOTION
+            if name == "motion"
+            else BinarySensorDeviceClass.OCCUPANCY
+        )
+        self._attr_unique_id = f"{coordinator.address}_{element.address:04x}_{name}"
         self._attr_device_info = coordinator.device_info
         self._attr_is_on = None
         self._attr_available = False
@@ -62,7 +68,9 @@ class SteinelPresenceSensor(BinarySensorEntity):
 
     @callback
     def _handle_coordinator_update(self) -> None:
-        value = self.coordinator.sensor_values.get((self.element.address, "presence"))
+        value = self.coordinator.sensor_values.get(
+            (self.element.address, self.name_key)
+        )
         if value is None:
             return
         self._attr_is_on = value.value if isinstance(value.value, bool) else None

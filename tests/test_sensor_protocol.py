@@ -35,5 +35,9 @@ def test_environmental_property_decoding() -> None:
 def test_presence_and_unknown_values() -> None:
     """Presence is boolean and malformed values remain unavailable."""
     assert protocol.decode_sensor_value("presence", b"\x01").value is True
+    assert protocol.decode_sensor_value("motion", b"\x01").value is True
+    assert protocol.decode_sensor_value("motion", b"\x00").value is False
+    assert protocol.decode_sensor_value("illuminance", b"\x10\x27\x00").value == 100
+    assert protocol.strip_property_prefix(0x0042, b"\x42\x00\x01") == b"\x01"
     assert protocol.decode_sensor_value("humidity", b"\x01").value is None
     assert protocol.decode_sensor_value("vendor", b"\xaa\xbb").raw == b"\xaa\xbb"

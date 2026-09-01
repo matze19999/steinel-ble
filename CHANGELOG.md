@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.5.0
+
+- Fixed STEINEL Sensor Extension replies whose echoed Property ID was
+  previously interpreted as the motion value.
+- Exposed motion as a binary motion sensor and added ambient illuminance.
+- Added unsolicited Sensor Extension status processing for faster motion and
+  presence updates.
+- Added Light LC controls for motion automation, main light, basic light,
+  timing and the light threshold.
+
 ## 0.3.0
 
 - Query on/off, lightness, colour temperature and HSL state immediately after

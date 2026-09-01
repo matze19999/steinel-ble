@@ -409,7 +409,7 @@ class MeshNode:
             for offset in range(element_count)
         ]
         for element in elements:
-            for model in (0x1000, 0x1300, 0x1303, 0x1307, 0x130F):
+            for model in (0x1000, 0x1300, 0x1303, 0x1307, 0x130F, 0x1310):
                 bind = (
                     element.address.to_bytes(2, "little")
                     + b"\x00\x00"

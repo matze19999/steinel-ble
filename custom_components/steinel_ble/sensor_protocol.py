@@ -8,6 +8,7 @@ SENSOR_PROPERTIES: dict[str, int] = {
     "motion": 0x0042,
     "people_count": 0x004C,
     "presence": 0x004D,
+    "illuminance": 0x004E,
     "temperature": 0x004F,
     "time_since_motion": 0x0068,
     "time_since_presence": 0x0069,
@@ -29,12 +30,21 @@ class SensorValue:
     raw: bytes
 
 
+def strip_property_prefix(property_id: int, data: bytes) -> bytes:
+    """Remove the echoed property ID used by STEINEL vendor responses."""
+    prefix = property_id.to_bytes(2, "little")
+    return data[2:] if data.startswith(prefix) else data
+
+
 def decode_sensor_value(name: str, data: bytes) -> SensorValue:
     """Decode Bluetooth SIG Device Property characteristic encodings."""
-    if name == "presence" and data:
+    if name in ("presence", "motion") and data:
         return SensorValue(bool(data[0]), data)
-    if name in ("motion", "noise") and data:
+    if name == "noise" and data:
         return SensorValue(data[0], data)
+    if name == "illuminance" and len(data) >= 3:
+        raw = int.from_bytes(data[:3], "little")
+        return SensorValue(None if raw == 0xFFFFFF else raw * 0.01, data)
     if name in ("temperature", "dew_point") and data:
         value = int.from_bytes(data[:1], "little", signed=True)
         return SensorValue(None if data[0] == 0x7F else value * 0.5, data)

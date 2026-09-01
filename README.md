@@ -49,10 +49,15 @@ SDK. See [Legal](#legal).
   retained across Home Assistant and integration restarts.
 - **Optional sensor entities** - devices with the STEINEL Sensor Extension
   model can expose presence, motion, people count, temperature, humidity, CO₂,
-  VOC, noise, air pressure, dew point, and time-since-motion/presence values.
+  VOC, noise, ambient illuminance, air pressure, dew point, and
+  time-since-motion/presence values.
   Unsupported properties remain unavailable. All properties of a device are
   refreshed by one shared polling cycle so they do not establish competing BLE
   sessions; light commands take priority over background polling.
+- **Light LC configuration** - compatible sensor lights expose controls for
+  automatic light control, motion automation, main-light brightness and time,
+  basic-light brightness and time, and the ambient-light threshold. This
+  includes the corresponding functions used by products such as the L 810 SC.
 - **Bluetooth proxy support** - connections use Home Assistant's Bluetooth
   stack and
   [`bleak-retry-connector`](https://github.com/Bluetooth-Devices/bleak-retry-connector),

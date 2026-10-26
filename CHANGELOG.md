@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.6.1
+
+- Keep sensors and other entities available when a light command's status reply
+  times out while the BLE connection remains active. Report the failed command
+  as a Home Assistant error instead of an unhandled timeout.
+- Wake background reconnection after transport errors and replace a failed
+  connection before accepting the next command.
+- Name secondary LC-only elements as light controls with their Mesh address,
+  and avoid restoring unsupported Light Lightness values on these elements.
+- Add credential-free Mesh receive counters to diagnostics, distinguishing
+  other NetKeys, IVI mismatches, failed authentication and accepted messages.
+
 ## 0.6.0
 
 - Declare all test dependencies for consistent local and CI runs, including

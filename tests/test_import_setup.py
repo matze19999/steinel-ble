@@ -328,3 +328,126 @@ def test_proxy_uses_imported_source_before_filter_configuration(
     asyncio.run(coordinator._async_connect_proxy_attempt())
     assert coordinator.node is node
     node.initialize_proxy_filter.assert_awaited_once()
+
+
+def _command_coordinator(integration):
+    coordinator = _coordinator(integration)
+    coordinator.address = coordinator.entry.data["address"]
+    coordinator.entry.options = {}
+    coordinator.available = True
+    coordinator.last_error = None
+    coordinator._light_commands = 0
+    coordinator._shutting_down = False
+    coordinator._suppress_disconnect = False
+    coordinator._connection_failed = False
+    coordinator._disconnect_event = asyncio.Event()
+    coordinator.is_on = {}
+    coordinator.brightness = {}
+    coordinator.elements = []
+    coordinator.sensor_values = {(2, "motion"): True}
+    coordinator.transport = types.SimpleNamespace(
+        client=types.SimpleNamespace(is_connected=True), disconnect=AsyncMock()
+    )
+    coordinator.node = types.SimpleNamespace(
+        request=AsyncMock(), next_tid=Mock(return_value=0)
+    )
+    coordinator.async_ensure_connected = AsyncMock(return_value=coordinator.node)
+    coordinator._schedule_state_persist = Mock()
+    coordinator._notify = Mock()
+    return coordinator
+
+
+@pytest.mark.parametrize("command", ["light", "ctl", "hsl"])
+def test_missing_model_reply_does_not_disable_all_sensors(integration, command):
+    coordinator = _command_coordinator(integration)
+    coordinator.node.request.side_effect = TimeoutError()
+    if command == "light":
+        call = coordinator.async_set_light(2, on=True)
+    elif command == "ctl":
+        call = coordinator.async_set_ctl(2, 100, 4000)
+    else:
+        call = coordinator.async_set_hsl(2, 100, 20, 50)
+    with pytest.raises(
+        integration.coordinator.HomeAssistantError, match="status response"
+    ):
+        asyncio.run(call)
+    assert coordinator.available
+    assert not coordinator._disconnect_event.is_set()
+    assert coordinator.sensor_values == {(2, "motion"): True}
+    assert coordinator.is_on == {}
+    assert coordinator._light_commands == 0
+    coordinator._notify.assert_called_once()
+
+
+@pytest.mark.parametrize("connected", [False, True])
+def test_transport_failure_wakes_reconnect_monitor(integration, connected):
+    coordinator = _command_coordinator(integration)
+    coordinator.transport.client.is_connected = connected
+    coordinator.node.request.side_effect = (
+        integration.coordinator.BleakError("Link failed")
+        if connected
+        else TimeoutError()
+    )
+    with pytest.raises(integration.coordinator.HomeAssistantError):
+        asyncio.run(coordinator.async_set_light(2, on=True))
+    assert not coordinator.available
+    assert coordinator._connection_failed
+    assert coordinator._disconnect_event.is_set()
+
+
+def test_lc_only_element_does_not_restore_unsupported_lightness(integration):
+    coordinator = _command_coordinator(integration)
+    coordinator.brightness[2] = 100
+    coordinator.elements = [types.SimpleNamespace(address=2, sig_models={0x130F})]
+    asyncio.run(coordinator.async_set_light(2, on=True, use_lc=True))
+    coordinator.node.request.assert_awaited_once_with(2, 0x829A, b"\x01\x00", 0x829C)
+
+
+def test_failed_connected_node_is_replaced_before_next_command(integration):
+    coordinator = _command_coordinator(integration)
+    coordinator.available = False
+    coordinator._connection_failed = True
+    coordinator._connect_lock = asyncio.Lock()
+    coordinator._cancel_idle_disconnect = Mock()
+    replacement = object()
+
+    async def reconnect():
+        coordinator.node = replacement
+
+    coordinator._async_connect_proxy.side_effect = reconnect
+    result = asyncio.run(
+        integration.coordinator.SteinelCoordinator.async_ensure_connected(coordinator)
+    )
+    assert result is replacement
+    assert coordinator.available
+    coordinator.transport.disconnect.assert_awaited_once()
+
+
+def test_initial_sensor_queries_reuse_connected_node_before_available(integration):
+    coordinator = _command_coordinator(integration)
+    coordinator.available = False
+    coordinator._connect_lock = asyncio.Lock()
+    coordinator._cancel_idle_disconnect = Mock()
+    result = asyncio.run(
+        integration.coordinator.SteinelCoordinator.async_ensure_connected(coordinator)
+    )
+    assert result is coordinator.node
+    coordinator._async_connect_proxy.assert_not_awaited()
+
+
+def test_reconnect_monitor_recovers_without_entry_reload(integration, monkeypatch):
+    coordinator = _command_coordinator(integration)
+    coordinator._connect_lock = asyncio.Lock()
+    coordinator.available = False
+    coordinator._disconnect_event.set()
+    coordinator.reconnect_count = 0
+
+    async def reconnect():
+        coordinator._shutting_down = True
+
+    coordinator._async_connect_proxy.side_effect = reconnect
+    monkeypatch.setattr(integration.coordinator.asyncio, "sleep", AsyncMock())
+    asyncio.run(coordinator._async_reconnect_monitor())
+    assert coordinator.available
+    assert coordinator.reconnect_count == 1
+    assert coordinator.last_error is None

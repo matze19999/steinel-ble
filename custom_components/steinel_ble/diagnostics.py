@@ -44,6 +44,9 @@ async def async_get_config_entry_diagnostics(
             "last_connected": coordinator.last_connected,
             "last_error": coordinator.last_error,
             "reconnect_count": coordinator.reconnect_count,
+            "mesh_receive_counts": (
+                dict(coordinator.node.rx_stats) if coordinator.node else {}
+            ),
             "sensor_values": {
                 f"{address:04x}_{name}": value.value
                 for (address, name), value in coordinator.sensor_values.items()

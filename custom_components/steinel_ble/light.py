@@ -66,6 +66,13 @@ class SteinelMeshLight(LightEntity):
         self.element = element
         self._attr_unique_id = f"{coordinator.address}_{element.address:04x}_light"
         self._attr_device_info = coordinator.device_info
+        if MODEL_LIGHT_LC_SERVER in element.sig_models and not element.sig_models & {
+            MODEL_LIGHT_LIGHTNESS_SERVER,
+            MODEL_LIGHT_CTL_SERVER,
+            MODEL_LIGHT_HSL_SERVER,
+        }:
+            self._attr_translation_key = "light_control"
+            self._attr_translation_placeholders = {"address": f"{element.address:04X}"}
         if MODEL_LIGHT_HSL_SERVER in element.sig_models:
             self._attr_color_mode = ColorMode.HS
             self._attr_supported_color_modes = {ColorMode.HS}

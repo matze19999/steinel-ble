@@ -7,6 +7,7 @@ import importlib.util
 import sys
 import types
 from pathlib import Path
+from unittest.mock import Mock
 
 
 def _load_package():
@@ -95,3 +96,41 @@ def test_provisioning_failure_is_reported() -> None:
             raise AssertionError("Provisioning failure was ignored")
 
     asyncio.run(run())
+
+
+def _receiving_node():
+    return mesh.MeshNode(
+        None, bytes(16), bytes([1]) * 16, bytes([2]) * 16, 0, 0, 2, Mock(), Mock()
+    )
+
+
+def test_receive_diagnostics_distinguish_network_failures():
+    node = _receiving_node()
+    good = mesh.network_encrypt(node.net_keys, 0, 5, 1, 2, 1, b"\x40test")
+    other_key = bytes([good[0] ^ 1]) + good[1:]
+    other_iv = bytes([good[0] ^ 0x80]) + good[1:]
+    invalid_mic = good[:-1] + bytes([good[-1] ^ 1])
+
+    async def run():
+        await node.handle_pdu(0, other_key)
+        await node.handle_pdu(0, other_iv)
+        await node.handle_pdu(0, invalid_mic)
+
+    asyncio.run(run())
+    assert dict(node.rx_stats) == {
+        "network_other_key": 1,
+        "network_iv_mismatch": 1,
+        "network_invalid": 1,
+    }
+    node.access_received.assert_not_called()
+
+
+def test_receive_diagnostics_count_authenticated_access():
+    node = _receiving_node()
+    upper = mesh.upper_transport_encrypt(node.app_key, 1, 1, 2, 1, 0, b"\x82\x04\x01")
+    lower = bytes([0x40 | mesh.k4(node.app_key)]) + upper
+    pdu = mesh.network_encrypt(node.net_keys, 0, 5, 1, 2, 1, lower)
+    asyncio.run(node.handle_pdu(0, pdu))
+    assert node.rx_stats["network_authenticated"] == 1
+    assert node.rx_stats["access_authenticated"] == 1
+    node.access_received.assert_called_once_with(2, 0x8204, b"\x01")

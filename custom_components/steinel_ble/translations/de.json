@@ -78,6 +78,9 @@
   },
   "entity": {
     "device_tracker": {"reachability": {"name": "Erreichbarkeit"}},
-    "light": {"light": {"name": "Licht"}}
+    "light": {
+      "light": {"name": "Licht"},
+      "light_control": {"name": "Lichtsteuerung (0x{address})"}
+    }
   }
 }

@@ -81,7 +81,8 @@
       "reachability": {"name": "Reachability"}
     },
     "light": {
-      "light": {"name": "Light"}
+      "light": {"name": "Light"},
+      "light_control": {"name": "Light control (0x{address})"}
     }
   }
 }

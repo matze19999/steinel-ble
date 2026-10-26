@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections import Counter
 from collections.abc import Callable
 from dataclasses import dataclass, field
 
@@ -135,6 +136,7 @@ class MeshNode:
             tuple[int | None, asyncio.Future[tuple[int, int, bytes]]]
         ] = []
         self._send_lock = asyncio.Lock()
+        self.rx_stats: Counter[str] = Counter()
 
     def next_tid(self) -> int:
         """Return a model transaction ID."""
@@ -154,11 +156,32 @@ class MeshNode:
         """Receive a Proxy Network PDU."""
         if pdu_type != 0x00:
             return
+        if len(payload) < 14:
+            self.rx_stats["network_invalid"] += 1
+            return
+        if payload[0] & 0x7F != self.net_keys.nid:
+            self.rx_stats["network_other_key"] += 1
+            return
+        if payload[0] >> 7 != self.iv_index & 1:
+            self.rx_stats["network_iv_mismatch"] += 1
+            if self.rx_stats["network_iv_mismatch"] == 1:
+                _LOGGER.warning(
+                    "Received Mesh IVI does not match configured IV Index %s; "
+                    "check the imported network's current IV Index",
+                    self.iv_index,
+                )
+            return
         try:
             network = network_decrypt(self.net_keys, self.iv_index, payload)
         except (ValueError, InvalidTag):
-            _LOGGER.debug("Ignoring a Mesh PDU that cannot be authenticated")
+            self.rx_stats["network_invalid"] += 1
+            if self.rx_stats["network_invalid"] == 1:
+                _LOGGER.debug(
+                    "Mesh Network MIC validation failed with matching NID/IVI; "
+                    "check NetKey and IV Index"
+                )
             return
+        self.rx_stats["network_authenticated"] += 1
         lower = network.lower_transport
         if not lower:
             return
@@ -227,6 +250,7 @@ class MeshNode:
             else None
         )
         if key is None:
+            self.rx_stats["access_other_key"] += 1
             return
         try:
             access = upper_transport_decrypt(
@@ -241,7 +265,9 @@ class MeshNode:
             )
             opcode, parameters = decode_opcode(access)
         except (InvalidTag, ValueError):
+            self.rx_stats["access_invalid"] += 1
             return
+        self.rx_stats["access_authenticated"] += 1
         for expected, source, future in tuple(self._requests):
             if (
                 not future.done()

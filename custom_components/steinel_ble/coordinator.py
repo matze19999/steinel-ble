@@ -147,6 +147,7 @@ class SteinelCoordinator:
         self.advertisement_available = False
         self._light_commands = 0
         self._suppress_disconnect = False
+        self._connection_failed = False
         self._shutting_down = False
         self.reconnect_count = 0
         self.last_connected: datetime | None = None
@@ -361,6 +362,7 @@ class SteinelCoordinator:
         """Mark the node unavailable and wake the reconnect monitor."""
         if self._shutting_down or self._suppress_disconnect:
             return
+        self._connection_failed = True
         self.available = False
         self._disconnect_event.set()
         self._notify()
@@ -642,6 +644,7 @@ class SteinelCoordinator:
         node.src = self.entry.data.get(CONF_SOURCE_ADDRESS, 0x0001)
         self.transport, self.node = transport, node
         await node.initialize_proxy_filter()
+        self._connection_failed = False
         self.last_connected = datetime.now(UTC)
         self.last_error = None
 
@@ -767,6 +770,7 @@ class SteinelCoordinator:
                 and self.transport.client
                 and self.transport.client.is_connected
                 and self.node
+                and not self._connection_failed
             ):
                 return self.node
             if self.transport:
@@ -776,6 +780,24 @@ class SteinelCoordinator:
             self._notify()
             assert self.node is not None
             return self.node
+
+    def _command_error(self, err: Exception, address: int) -> HomeAssistantError:
+        """Keep a missed model reply separate from a lost BLE connection."""
+        self.last_error = (
+            "Timed out waiting for a Bluetooth Mesh status response "
+            f"from element 0x{address:04X}"
+            if isinstance(err, TimeoutError)
+            else str(err)
+        )
+        connected = bool(
+            self.transport
+            and self.transport.client
+            and self.transport.client.is_connected
+        )
+        if not isinstance(err, TimeoutError) or not connected:
+            self._transport_disconnected()
+        _LOGGER.warning("Mesh command failed for %s: %s", self.address, self.last_error)
+        return HomeAssistantError(self.last_error)
 
     async def async_set_light(
         self,
@@ -814,6 +836,11 @@ class SteinelCoordinator:
                 brightness is None
                 and on
                 and remembered_brightness
+                and any(
+                    element.address == address
+                    and MODEL_LIGHT_LIGHTNESS_SERVER in element.sig_models
+                    for element in self.elements
+                )
                 and self._option(CONF_RESTORE_BRIGHTNESS, DEFAULT_RESTORE_BRIGHTNESS)
             ):
                 # The L 845 C first applies its configured LC/OnPowerUp level
@@ -833,9 +860,9 @@ class SteinelCoordinator:
             if brightness is not None:
                 self.brightness[address] = brightness
             self.available = True
-        except Exception:
-            self.available = False
-            raise
+            self.last_error = None
+        except (TimeoutError, BleakError, ConnectionError) as err:
+            raise self._command_error(err, address) from err
         finally:
             self._light_commands -= 1
             self._schedule_state_persist()
@@ -865,9 +892,9 @@ class SteinelCoordinator:
             self.brightness[address] = brightness
             self.is_on[address] = lightness > 0
             self.available = True
-        except Exception:
-            self.available = False
-            raise
+            self.last_error = None
+        except (TimeoutError, BleakError, ConnectionError) as err:
+            raise self._command_error(err, address) from err
         finally:
             self._light_commands -= 1
             self._schedule_state_persist()
@@ -899,9 +926,9 @@ class SteinelCoordinator:
             self.brightness[address] = brightness
             self.is_on[address] = lightness > 0
             self.available = True
-        except Exception:
-            self.available = False
-            raise
+            self.last_error = None
+        except (TimeoutError, BleakError, ConnectionError) as err:
+            raise self._command_error(err, address) from err
         finally:
             self._light_commands -= 1
             self._schedule_state_persist()

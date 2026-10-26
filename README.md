@@ -227,6 +227,26 @@ detected sensor properties, active and passive reachability, last
 advertisement, connection state, reconnect count, Bluetooth source and RSSI.
 NetKey, AppKey, Device Key and Static OOB values are always redacted.
 
+A lamp can expose both a physical light element and a separate Light LC
+control element. The latter is named **Light control (0x...)**, with its Mesh
+element address, rather than appearing as a second identically named light.
+These entities control different Mesh models and do not necessarily represent
+two separate bulbs.
+
+A missing status reply causes the individual light command to fail; it does
+not mark every sensor unavailable while BLE remains connected. Actual
+transport errors start background reconnection automatically.
+
+If commands still time out, download device diagnostics before reloading the
+entry. `mesh_receive_counts` separates unrelated network traffic
+(`network_other_key`), an IVI mismatch (`network_iv_mismatch`), failed network
+authentication (`network_invalid`), and authenticated Network/Access messages.
+A matching NID or IVI alone does not prove the NetKey or full IV Index is correct.
+An `access_other_key` count indicates an application-key identifier mismatch;
+`access_invalid` includes failed Access authentication or malformed messages.
+These counters reset when the Mesh connection is recreated. Share the
+integration's diagnostics and debug log, not the original App JSON export.
+
 ## How it works
 
 After provisioning, the integration:

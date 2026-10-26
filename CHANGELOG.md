@@ -2,6 +2,8 @@
 
 ## 0.6.0
 
+- Declare all test dependencies for consistent local and CI runs, including
+  Voluptuous for configuration-flow tests.
 - Import already provisioned devices from a STEINEL Connect Mesh JSON export.
   Existing keys, unicast addresses and model bindings are reused without
   resetting or provisioning the lamp, preserving native groups and settings.

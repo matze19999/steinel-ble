@@ -284,6 +284,7 @@ For a failed automatic reset, first verify that:
 Run the local checks with:
 
 ```bash
+python -m pip install -r requirements-test.txt
 ruff check custom_components tests
 ruff format --check custom_components tests
 pytest

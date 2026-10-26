@@ -1,0 +1,6 @@
+bleak
+bleak-retry-connector
+cryptography
+pytest
+ruff
+voluptuous

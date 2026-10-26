@@ -62,3 +62,26 @@ def test_upper_transport_round_trip() -> None:
         crypto.upper_transport_decrypt(key, 1, 7, 1, 0x0100, 0, encrypted)
         == b"\x82\x02\x01\x22"
     )
+
+
+def test_official_network_pdu_vector() -> None:
+    """Check wire bytes independently of our own encrypt/decrypt round trip."""
+    keys = crypto.NetworkKeys.derive(bytes.fromhex("7dd7364cd842ad18c17c2b820c84c3d6"))
+    expected = bytes.fromhex("68eca487516765b5e5bfdacbaf6cb7fb6bff871f035444ce83a670df")
+    assert (
+        crypto.network_encrypt(
+            keys,
+            0x12345678,
+            0x80,
+            1,
+            0x1201,
+            0xFFFD,
+            bytes.fromhex("034b50057e400000010000"),
+        )
+        == expected
+    )
+    decoded = crypto.network_decrypt(keys, 0x12345678, expected)
+    assert decoded.src == 0x1201
+    assert decoded.dst == 0xFFFD
+    assert decoded.ctl
+    assert decoded.lower_transport == bytes.fromhex("034b50057e400000010000")

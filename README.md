@@ -259,6 +259,8 @@ After provisioning, the integration:
 6. creates entities only for applicable elements and model families.
 
 Both outgoing and incoming segmented lower-transport messages are supported.
+GATT Proxy fragments belonging to one PDU are sent together, including when
+access messages and transport acknowledgements are produced concurrently.
 Normal control uses acknowledged access messages so returned device states can
 be reflected in Home Assistant.
 

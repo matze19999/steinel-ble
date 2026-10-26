@@ -37,6 +37,7 @@ class MeshGattTransport:
         self._rx_type: int | None = None
         self._rx = bytearray()
         self._tasks: set[asyncio.Task[None]] = set()
+        self._send_lock = asyncio.Lock()
 
     async def connect(self, *, subscribe: bool = True) -> None:
         """Connect and optionally subscribe to the Data Out characteristic."""
@@ -109,6 +110,11 @@ class MeshGattTransport:
 
     async def send(self, pdu_type: int, payload: bytes) -> None:
         """Segment and send a Proxy Protocol PDU."""
+        async with self._send_lock:
+            await self._send_pdu(pdu_type, payload)
+
+    async def _send_pdu(self, pdu_type: int, payload: bytes) -> None:
+        """Keep all fragments of one PDU together on the GATT bearer."""
         if self.client is None or not self.client.is_connected:
             raise ConnectionError("Mesh GATT transport is not connected")
         characteristic = self.client.services.get_characteristic(self.data_in)

@@ -134,3 +134,40 @@ def test_receive_diagnostics_count_authenticated_access():
     assert node.rx_stats["network_authenticated"] == 1
     assert node.rx_stats["access_authenticated"] == 1
     node.access_received.assert_called_once_with(2, 0x8204, b"\x01")
+
+
+def test_concurrent_proxy_sends_do_not_interleave_fragments():
+    class Client:
+        is_connected = True
+
+        def __init__(self):
+            characteristic = types.SimpleNamespace(max_write_without_response_size=6)
+            self.services = types.SimpleNamespace(
+                get_characteristic=lambda _: characteristic
+            )
+            self.writes = []
+
+        async def write_gatt_char(self, _characteristic, data, response):
+            self.writes.append(bytes(data))
+            await asyncio.sleep(0)
+
+    async def run():
+        transport = gatt.MeshGattTransport(None, "test", "in", "out", None)
+        client = transport.client = Client()
+        await asyncio.gather(
+            transport.send(0, b"first message"),
+            transport.send(0, b"second message"),
+        )
+        receiver = gatt.MeshGattTransport(None, "test", "in", "out", None)
+        received = []
+
+        async def receive(pdu_type, payload):
+            received.append((pdu_type, payload))
+
+        receiver.handler = receive
+        for fragment in client.writes:
+            receiver._notification(None, bytearray(fragment))
+        await asyncio.gather(*receiver._tasks)
+        assert received == [(0, b"first message"), (0, b"second message")]
+
+    asyncio.run(run())

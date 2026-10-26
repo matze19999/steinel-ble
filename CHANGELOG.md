@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.6.2
+
+- Serialize complete GATT Proxy PDUs so simultaneous access messages and
+  transport acknowledgements cannot interleave their SAR fragments.
+- Add a concurrency regression test and verify network encryption and
+  decryption against an official Bluetooth Mesh wire-format test vector.
+
 ## 0.6.1
 
 - Keep sensors and other entities available when a light command's status reply

@@ -47,6 +47,7 @@ async def async_setup_entry(
             MODEL_LIGHT_LIGHTNESS_SERVER,
             MODEL_LIGHT_CTL_SERVER,
             MODEL_LIGHT_HSL_SERVER,
+            MODEL_LIGHT_LC_SERVER,
         }
     ]
     async_add_entities(entities)

@@ -6,23 +6,40 @@
     },
     "error": {
       "invalid_address": "Bitte eine gültige Bluetooth-Adresse eingeben.",
-      "invalid_oob": "Der statische OOB-Schlüssel muss aus genau 32 Hexadezimalzeichen bestehen."
+      "invalid_oob": "Der statische OOB-Schlüssel muss aus genau 32 Hexadezimalzeichen bestehen.",
+      "invalid_mesh_export": "Bitte einen vollständigen STEINEL-Mesh-JSON-Export mit Geräten, Schlüsseln und Modellbindungen eingeben.",
+      "invalid_mesh_credentials": "AppKey, IV Index und Sequenznummer prüfen. Die Senderadresse muss frei, für diesen Eintrag reserviert und außerhalb aller exportierten Geräteelemente liegen. Einen laufenden Key Refresh vor dem Import abschließen."
     },
     "step": {
       "bluetooth_confirm": {
         "description": "{name} ({address}) einrichten. Das Gerät wird beim Start der Integration provisioniert. Für eine Provisionierung ohne OOB das Feld leer lassen.",
-        "data": {"static_oob": "Statischer OOB-Schlüssel (optional)"},
+        "data": {"static_oob": "Statischer OOB-Schlüssel (optional)", "existing_mesh": "Mesh beibehalten: STEINEL-App-JSON importieren"},
         "title": "Steinel-Connect-Gerät einrichten"
       },
       "reset_help": {
-        "description": "{name} ({address}) ist bereits Teil eines Bluetooth-Mesh-Netzwerks. Schließe zunächst die Steinel-App und alle anderen Bluetooth-Apps vollständig, die mit der Lampe verbunden sein könnten. Schalte dann die Stromzufuhr der Lampe kurz aus und wieder ein und sende dieses Formular unmittelbar danach ab. Die Integration nutzt das kurze Zeitfenster nach dem Einschalten, um die Lampe automatisch zurückzusetzen und zu provisionieren. Falls die Einrichtung nicht gelingt, wiederhole diese Schritte und lade den Integrationseintrag neu.",
-        "data": {"static_oob": "Statischer OOB-Schlüssel (optional)"},
+        "description": "{name} ({address}) gehört bereits zu einem Mesh. Aktiviere unten den JSON-Import, um die Einstellungen beizubehalten; ein Reset oder Aus- und Einschalten ist dafür nicht nötig. Andernfalls: STEINEL-App und andere Bluetooth-Clients schließen, die Lampe kurz vom Strom trennen, wieder einschalten und dieses Formular sofort absenden. Die Integration setzt die Lampe dann zurück und provisioniert sie neu.",
+        "data": {"static_oob": "Statischer OOB-Schlüssel (optional)", "existing_mesh": "Mesh beibehalten: STEINEL-App-JSON importieren"},
         "title": "Lampe für Mesh-Reset vorbereiten"
       },
       "user": {
         "description": "Ein gefundenes Steinel-Bluetooth-Mesh-Gerät auswählen oder dessen Bluetooth-Adresse eingeben.",
-        "data": {"address": "Bluetooth-Adresse", "static_oob": "Statischer OOB-Schlüssel (optional)"},
+        "data": {"address": "Bluetooth-Adresse", "static_oob": "Statischer OOB-Schlüssel (optional)", "existing_mesh": "Mesh beibehalten: STEINEL-App-JSON importieren"},
         "title": "Steinel-Connect-Gerät hinzufügen"
+      },
+      "mesh_import": {
+        "title": "Vorhandenes STEINEL-Mesh importieren",
+        "description": "Den Inhalt der aus der STEINEL-Connect-App exportierten JSON-Datei einfügen. Reset und Provisionierung werden übersprungen; Gruppen, Szenen und Sensoreinstellungen bleiben erhalten. Gespeichert werden nur die Schlüssel und gebundenen Modelle des ausgewählten Geräts. Die App schließen, während Home Assistant per Bluetooth verbindet.",
+        "data": {"mesh_json": "STEINEL-Mesh-JSON"}
+      },
+      "mesh_node": {
+        "title": "Exportiertes Gerät auswählen",
+        "description": "Das Gerät auswählen, das zur zuvor eingegebenen Bluetooth-Adresse gehört. Der Provisioner des Handys und ausgeschlossene Geräte werden nicht angeboten.",
+        "data": {"node": "Gerät"}
+      },
+      "mesh_credentials": {
+        "title": "Mesh-Sender und Laufzeitdaten",
+        "description": "Einen bereits gebundenen AppKey wählen. In der Adressvergabe des Meshs eine eigene freie Unicast-Senderadresse für diesen HA-Eintrag reservieren; niemals die Adresse des Handys oder einer Lampe verwenden. Den aktuellen IV Index eingeben (bei neuen Netzen meist 0); er kann im Export fehlen. Sequenznummer 0 gilt nur für eine bisher nie verwendete Senderadresse. Bei einer zuvor verwendeten Adresse deren nächste unbenutzte Sequenznummer eingeben. Adressen sind hexadezimal (z. B. 7FFE), IV Index und Sequenznummer dezimal.",
+        "data": {"app_key_index": "AppKey-Index", "source_address": "Reservierte HA-Senderadresse (hexadezimal)", "iv_index": "Aktueller IV Index (dezimal)", "sequence": "Nächste unbenutzte Sequenznummer (dezimal)"}
       }
     }
   },

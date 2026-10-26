@@ -6,23 +6,40 @@
     },
     "error": {
       "invalid_address": "Enter a valid Bluetooth address.",
-      "invalid_oob": "The static OOB key must contain exactly 32 hexadecimal characters."
+      "invalid_oob": "The static OOB key must contain exactly 32 hexadecimal characters.",
+      "invalid_mesh_export": "Enter a complete STEINEL Mesh JSON export containing nodes, keys and model bindings.",
+      "invalid_mesh_credentials": "Check the selected key, IV Index and sequence. The source must be an unused unicast address, reserved for this entry and outside all exported node elements. Finish any Key Refresh before importing."
     },
     "step": {
       "bluetooth_confirm": {
         "description": "Set up {name} ({address}). The device will be provisioned when the integration starts. Leave the OOB key empty for No OOB provisioning.",
-        "data": {"static_oob": "Static OOB key (optional)"},
+        "data": {"static_oob": "Static OOB key (optional)", "existing_mesh": "Keep existing Mesh: import STEINEL App JSON"},
         "title": "Set up Steinel Connect device"
       },
       "reset_help": {
-        "description": "{name} ({address}) is already part of a Bluetooth Mesh network. Before continuing, completely close the Steinel app and any other Bluetooth app connected to the light. Switch the light's mains power off briefly, switch it back on, and then submit this form immediately. The integration will use the short startup window to reset and provision the light automatically. If setup does not succeed, repeat these steps and reload the integration entry.",
-        "data": {"static_oob": "Static OOB key (optional)"},
+        "description": "{name} ({address}) already belongs to a Mesh. To keep its settings, enable the JSON import below; no reset or power cycle is needed. Otherwise, close the STEINEL app and other Bluetooth clients, briefly power the light off and on, and immediately submit this form to reset and provision it.",
+        "data": {"static_oob": "Static OOB key (optional)", "existing_mesh": "Keep existing Mesh: import STEINEL App JSON"},
         "title": "Prepare light for Mesh reset"
       },
       "user": {
         "description": "Select a discovered Steinel Bluetooth Mesh device or enter its Bluetooth address.",
-        "data": {"address": "Bluetooth address", "static_oob": "Static OOB key (optional)"},
+        "data": {"address": "Bluetooth address", "static_oob": "Static OOB key (optional)", "existing_mesh": "Keep existing Mesh: import STEINEL App JSON"},
         "title": "Add Steinel Connect device"
+      },
+      "mesh_import": {
+        "title": "Import existing STEINEL Mesh",
+        "description": "Paste the contents of the JSON exported by the STEINEL Connect app. Reset and provisioning are skipped, preserving groups, scenes and sensor settings. Only the selected node's credentials and bound models are stored. Close the app while Home Assistant connects over Bluetooth.",
+        "data": {"mesh_json": "STEINEL Mesh JSON"}
+      },
+      "mesh_node": {
+        "title": "Select the exported device",
+        "description": "Choose the node matching the Bluetooth address entered earlier. The phone's provisioner and excluded nodes are omitted.",
+        "data": {"node": "Device"}
+      },
+      "mesh_credentials": {
+        "title": "Mesh sender and runtime state",
+        "description": "Choose an existing bound AppKey. Reserve a separate unused unicast source for this HA entry in your network's address allocation; never use the phone's or a lamp's address. Enter the current IV Index (usually 0 for a new network); the export may omit it. Sequence 0 is valid only for a source never used before. When restoring a previously used source, enter its next unused sequence. Addresses are hexadecimal (e.g. 7FFE); IV Index and sequence are decimal.",
+        "data": {"app_key_index": "AppKey index", "source_address": "Reserved HA source address (hexadecimal)", "iv_index": "Current IV Index (decimal)", "sequence": "Next unused sequence number (decimal)"}
       }
     }
   },

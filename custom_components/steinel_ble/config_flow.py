@@ -14,6 +14,8 @@ from homeassistant.helpers.selector import (
     NumberSelector,
     NumberSelectorConfig,
     NumberSelectorMode,
+    SelectSelector,
+    SelectSelectorConfig,
     TextSelector,
     TextSelectorConfig,
 )
@@ -25,13 +27,16 @@ from .const import (
     CONF_CONNECT_ATTEMPTS,
     CONF_DISCONNECT_WHEN_IDLE,
     CONF_ELEMENTS,
+    CONF_EXISTING_MESH,
     CONF_IDLE_DISCONNECT_DELAY,
     CONF_MODEL_SCHEMA_VERSION,
+    CONF_NET_KEY,
     CONF_PRODUCT_ID,
     CONF_PROVISION_ATTEMPTS,
     CONF_RESTORE_BRIGHTNESS,
     CONF_SENSOR_INTERVAL,
     CONF_SENSOR_PROPERTIES,
+    CONF_SOURCE_ADDRESS,
     CONF_STATIC_OOB,
     DEFAULT_ADVERTISEMENT_TIMEOUT,
     DEFAULT_BRIGHTNESS_DELAY,
@@ -46,6 +51,7 @@ from .const import (
     MESH_PROXY_SERVICE,
     STEINEL_COMPANY_ID,
 )
+from .mesh_import import import_mesh_node, node_app_keys, read_mesh_export
 
 _MAC_RE = re.compile(r"^(?:[0-9A-F]{2}:){5}[0-9A-F]{2}$", re.IGNORECASE)
 
@@ -66,6 +72,8 @@ class SteinelConfigFlow(ConfigFlow, domain=DOMAIN):
         self._product_id: int | None = None
         self._requires_reset = False
         self._static_oob = ""
+        self._mesh_export: dict[str, Any] | None = None
+        self._import_node: str | None = None
 
     async def async_step_bluetooth(
         self, discovery_info: bluetooth.BluetoothServiceInfoBleak
@@ -98,6 +106,8 @@ class SteinelConfigFlow(ConfigFlow, domain=DOMAIN):
         assert self._address is not None
         errors: dict[str, str] = {}
         if user_input is not None:
+            if user_input.get(CONF_EXISTING_MESH):
+                return await self.async_step_mesh_import()
             static_oob = user_input.get(CONF_STATIC_OOB, "").strip()
             if not self._valid_oob(static_oob):
                 errors[CONF_STATIC_OOB] = "invalid_oob"
@@ -107,9 +117,10 @@ class SteinelConfigFlow(ConfigFlow, domain=DOMAIN):
             step_id="reset_help",
             data_schema=vol.Schema(
                 {
+                    vol.Optional(CONF_EXISTING_MESH, default=False): BooleanSelector(),
                     vol.Optional(
                         CONF_STATIC_OOB, default=self._static_oob
-                    ): TextSelector(TextSelectorConfig(type="password"))
+                    ): TextSelector(TextSelectorConfig(type="password")),
                 }
             ),
             description_placeholders={"name": self._name, "address": self._address},
@@ -123,6 +134,8 @@ class SteinelConfigFlow(ConfigFlow, domain=DOMAIN):
         assert self._address is not None
         errors: dict[str, str] = {}
         if user_input is not None:
+            if user_input.get(CONF_EXISTING_MESH):
+                return await self.async_step_mesh_import()
             static_oob = user_input.get(CONF_STATIC_OOB, "").strip()
             if not self._valid_oob(static_oob):
                 errors[CONF_STATIC_OOB] = "invalid_oob"
@@ -132,9 +145,10 @@ class SteinelConfigFlow(ConfigFlow, domain=DOMAIN):
             step_id="bluetooth_confirm",
             data_schema=vol.Schema(
                 {
+                    vol.Optional(CONF_EXISTING_MESH, default=False): BooleanSelector(),
                     vol.Optional(CONF_STATIC_OOB, default=""): TextSelector(
                         TextSelectorConfig(type="password")
-                    )
+                    ),
                 }
             ),
             description_placeholders={"name": self._name, "address": self._address},
@@ -161,6 +175,8 @@ class SteinelConfigFlow(ConfigFlow, domain=DOMAIN):
                 )
                 self._name = info.name if info else f"Steinel {address}"
                 self._address = address
+                if user_input.get(CONF_EXISTING_MESH):
+                    return await self.async_step_mesh_import()
                 if info and MESH_PROXY_SERVICE in {
                     uuid.lower() for uuid in info.service_uuids
                 }:
@@ -173,8 +189,141 @@ class SteinelConfigFlow(ConfigFlow, domain=DOMAIN):
             data_schema=vol.Schema(
                 {
                     vol.Required(CONF_ADDRESS): str,
+                    vol.Optional(CONF_EXISTING_MESH, default=False): BooleanSelector(),
                     vol.Optional(CONF_STATIC_OOB, default=""): TextSelector(
                         TextSelectorConfig(type="password")
+                    ),
+                }
+            ),
+            errors=errors,
+        )
+
+    async def async_step_mesh_import(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Accept an App export without retaining the entire export in the entry."""
+        errors: dict[str, str] = {}
+        if user_input is not None:
+            try:
+                export = read_mesh_export(user_input["mesh_json"])
+                if not any(node_app_keys(export, node) for node in export["nodes"]):
+                    raise ValueError("No bound application keys")
+            except (ValueError, KeyError, TypeError):
+                errors["base"] = "invalid_mesh_export"
+            else:
+                self._mesh_export = export
+                return await self.async_step_mesh_node()
+        return self.async_show_form(
+            step_id="mesh_import",
+            data_schema=vol.Schema(
+                {
+                    vol.Required("mesh_json"): TextSelector(
+                        TextSelectorConfig(multiline=True)
+                    )
+                }
+            ),
+            errors=errors,
+        )
+
+    async def async_step_mesh_node(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Select the exported node that matches the Bluetooth device."""
+        assert self._mesh_export is not None
+        nodes = [
+            node
+            for node in self._mesh_export["nodes"]
+            if node_app_keys(self._mesh_export, node)
+        ]
+        if user_input is not None and any(
+            node["unicastAddress"] == user_input["node"] for node in nodes
+        ):
+            self._import_node = user_input["node"]
+            return await self.async_step_mesh_credentials()
+        return self.async_show_form(
+            step_id="mesh_node",
+            data_schema=vol.Schema(
+                {
+                    vol.Required("node"): SelectSelector(
+                        SelectSelectorConfig(
+                            options=[
+                                {
+                                    "value": node["unicastAddress"],
+                                    "label": (
+                                        f"{node.get('name', 'Node')} "
+                                        f"(0x{node['unicastAddress']})"
+                                    ),
+                                }
+                                for node in nodes
+                            ]
+                        )
+                    )
+                }
+            ),
+        )
+
+    async def async_step_mesh_credentials(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Collect the runtime state absent from standard Mesh exports."""
+        assert self._mesh_export is not None and self._import_node is not None
+        node = next(
+            item
+            for item in self._mesh_export["nodes"]
+            if item["unicastAddress"] == self._import_node
+        )
+        errors: dict[str, str] = {}
+        if user_input is not None:
+            try:
+                data = import_mesh_node(
+                    self._mesh_export,
+                    self._import_node,
+                    int(user_input["app_key_index"]),
+                    int(user_input[CONF_SOURCE_ADDRESS].removeprefix("0x"), 16),
+                    int(user_input["iv_index"]),
+                    int(user_input["sequence"]),
+                )
+                for entry in self._async_current_entries():
+                    if entry.data.get(CONF_NET_KEY) != data[CONF_NET_KEY]:
+                        continue
+                    if (
+                        entry.data.get(CONF_SOURCE_ADDRESS, 1)
+                        == data[CONF_SOURCE_ADDRESS]
+                    ):
+                        raise ValueError(
+                            "Source address is already used by Home Assistant"
+                        )
+                    if entry.data.get("unicast_address") == data["unicast_address"]:
+                        return self.async_abort(reason="already_configured")
+            except (ValueError, KeyError, TypeError):
+                errors["base"] = "invalid_mesh_credentials"
+            else:
+                assert self._address is not None
+                data[CONF_ADDRESS] = self._address
+                if self._product_id is not None:
+                    data[CONF_PRODUCT_ID] = self._product_id
+                self._mesh_export = None
+                return self.async_create_entry(
+                    title=node.get("name") or self._name, data=data
+                )
+        return self.async_show_form(
+            step_id="mesh_credentials",
+            data_schema=vol.Schema(
+                {
+                    vol.Required("app_key_index"): SelectSelector(
+                        SelectSelectorConfig(
+                            options=[
+                                str(index)
+                                for index in node_app_keys(self._mesh_export, node)
+                            ]
+                        )
+                    ),
+                    vol.Required(CONF_SOURCE_ADDRESS): str,
+                    vol.Required("iv_index"): vol.All(
+                        vol.Coerce(int), vol.Range(min=0, max=0xFFFFFFFF)
+                    ),
+                    vol.Required("sequence", default=0): vol.All(
+                        vol.Coerce(int), vol.Range(min=0, max=0xFFFFFE)
                     ),
                 }
             ),

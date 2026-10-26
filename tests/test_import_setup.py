@@ -1,0 +1,330 @@
+"""Configuration and lifecycle regression tests for existing Mesh imports."""
+
+from __future__ import annotations
+
+import asyncio
+import importlib
+import json
+import sys
+import types
+from pathlib import Path
+from unittest.mock import AsyncMock, Mock
+
+import pytest
+
+
+@pytest.fixture
+def integration(monkeypatch):
+    """Supply the small Home Assistant API surface used by the tested methods."""
+    names = (
+        "homeassistant",
+        "homeassistant.components",
+        "homeassistant.components.bluetooth",
+        "homeassistant.config_entries",
+        "homeassistant.const",
+        "homeassistant.core",
+        "homeassistant.exceptions",
+        "homeassistant.helpers",
+        "homeassistant.helpers.device_registry",
+        "homeassistant.helpers.issue_registry",
+        "homeassistant.helpers.selector",
+    )
+    modules = {name: types.ModuleType(name) for name in names}
+    for name, module in modules.items():
+        monkeypatch.setitem(sys.modules, name, module)
+        if "." in name:
+            parent, attr = name.rsplit(".", 1)
+            setattr(modules[parent], attr, module)
+
+    class Flow:
+        def __init_subclass__(cls, **kwargs):
+            pass
+
+        def async_show_form(self, **kwargs):
+            return {"type": "form", **kwargs}
+
+        def async_create_entry(self, **kwargs):
+            return {"type": "create_entry", **kwargs}
+
+        def async_abort(self, **kwargs):
+            return {"type": "abort", **kwargs}
+
+        async def async_set_unique_id(self, _unique_id):
+            pass
+
+        def _abort_if_unique_id_configured(self):
+            pass
+
+        def _async_current_entries(self):
+            return []
+
+    entries = modules["homeassistant.config_entries"]
+    entries.ConfigFlow = Flow
+    entries.OptionsFlow = Flow
+    entries.ConfigFlowResult = dict
+    entries.ConfigEntry = types.SimpleNamespace
+    modules["homeassistant.const"].CONF_ADDRESS = "address"
+    modules["homeassistant.core"].HomeAssistant = object
+    modules["homeassistant.core"].callback = lambda fn: fn
+    modules["homeassistant.helpers.device_registry"].DeviceInfo = dict
+
+    class HAError(Exception):
+        pass
+
+    for name in ("ConfigEntryError", "ConfigEntryNotReady", "HomeAssistantError"):
+        setattr(modules["homeassistant.exceptions"], name, HAError)
+
+    class Selector:
+        def __init__(self, config=None):
+            self.config = config
+
+        def __call__(self, value):
+            return value
+
+    selectors = modules["homeassistant.helpers.selector"]
+    for prefix in ("Boolean", "Number", "Select", "Text"):
+        setattr(selectors, f"{prefix}Selector", Selector)
+        setattr(selectors, f"{prefix}SelectorConfig", dict)
+    selectors.NumberSelectorMode = types.SimpleNamespace(BOX="box")
+
+    name = "steinel_test_import_setup_package"
+    package = types.ModuleType(name)
+    package.__path__ = [
+        str(Path(__file__).parents[1] / "custom_components/steinel_ble")
+    ]
+    monkeypatch.setitem(sys.modules, name, package)
+    # Fresh modules for each fixture; no Home Assistant stubs leak to other tests.
+    for existing in list(sys.modules):
+        if existing.startswith(f"{name}."):
+            monkeypatch.delitem(sys.modules, existing)
+    return types.SimpleNamespace(
+        flow=importlib.import_module(f"{name}.config_flow"),
+        coordinator=importlib.import_module(f"{name}.coordinator"),
+        bluetooth=modules["homeassistant.components.bluetooth"],
+    )
+
+
+def _entry_data():
+    elements = [{"address": 2, "sig_models": [0x1000], "vendor_models": []}]
+    return {
+        "address": "AA:BB:CC:DD:EE:FF",
+        "existing_mesh": True,
+        "net_key": "11" * 16,
+        "app_key": "22" * 16,
+        "device_key": "33" * 16,
+        "unicast_address": 2,
+        "source_address": 0x7FFE,
+        "iv_index": 0,
+        "sequence": 0,
+        "imported_elements": elements,
+    }
+
+
+def _coordinator(integration):
+    cls = integration.coordinator.SteinelCoordinator
+    coordinator = object.__new__(cls)
+    coordinator.entry = types.SimpleNamespace(data=_entry_data())
+    coordinator.node = types.SimpleNamespace(configure=AsyncMock())
+    coordinator._update_entry = Mock(
+        side_effect=lambda updates: coordinator.entry.data.update(updates)
+    )
+    for method in (
+        "_async_provision",
+        "_async_connect_proxy",
+        "_async_detect_sensor_properties",
+        "_async_refresh_light_states",
+        "async_shutdown",
+    ):
+        setattr(coordinator, method, AsyncMock())
+    for method in (
+        "_start_advertisement_monitor",
+        "_start_reconnect_monitor",
+        "_start_sensor_polling",
+        "_arm_idle_disconnect",
+    ):
+        setattr(coordinator, method, Mock())
+    return coordinator
+
+
+def test_import_setup_skips_provision_and_config_writes(integration):
+    coordinator = _coordinator(integration)
+    asyncio.run(coordinator.async_setup())
+    coordinator._async_provision.assert_not_awaited()
+    coordinator.node.configure.assert_not_awaited()
+    coordinator._async_connect_proxy.assert_awaited_once()
+    assert coordinator.available
+    assert coordinator.elements[0].address == 2
+    assert coordinator.entry.data["device_key"] == "33" * 16
+
+
+def test_rescan_restores_bindings_without_adding_or_binding_keys(integration):
+    coordinator = _coordinator(integration)
+    coordinator.entry.data.pop("elements", None)
+    asyncio.run(coordinator._async_configure())
+    coordinator.node.configure.assert_not_awaited()
+    assert (
+        coordinator.entry.data["elements"]
+        == coordinator.entry.data["imported_elements"]
+    )
+
+
+def test_owned_mesh_still_configures_models(integration):
+    coordinator = _coordinator(integration)
+    coordinator.entry.data["existing_mesh"] = False
+    coordinator.node.configure.return_value = []
+    asyncio.run(coordinator._async_configure())
+    coordinator.node.configure.assert_awaited_once_with(1)
+
+
+def test_import_connection_failure_never_falls_back_to_provisioning(integration):
+    coordinator = _coordinator(integration)
+    coordinator._async_connect_proxy.side_effect = ConnectionError("No proxy")
+    with pytest.raises(integration.coordinator.ConfigEntryNotReady):
+        asyncio.run(coordinator.async_setup())
+    coordinator._async_provision.assert_not_awaited()
+    coordinator.node.configure.assert_not_awaited()
+    coordinator.async_shutdown.assert_awaited_once()
+
+
+def test_incomplete_import_does_not_generate_keys_or_reset(integration):
+    coordinator = _coordinator(integration)
+    del coordinator.entry.data["net_key"]
+    with pytest.raises(integration.coordinator.ConfigEntryError):
+        asyncio.run(coordinator.async_setup())
+    coordinator._update_entry.assert_not_called()
+    coordinator._async_provision.assert_not_awaited()
+    coordinator._start_advertisement_monitor.assert_not_called()
+
+
+def test_manual_setup_routes_to_import(integration):
+    flow = integration.flow.SteinelConfigFlow()
+    flow.hass = object()
+    integration.bluetooth.async_last_service_info = Mock(return_value=None)
+    result = asyncio.run(
+        flow.async_step_user({"address": "aa:bb:cc:dd:ee:ff", "existing_mesh": True})
+    )
+    assert result["step_id"] == "mesh_import"
+    assert flow._address == "AA:BB:CC:DD:EE:FF"
+
+
+def test_discovered_proxy_can_choose_import(integration):
+    flow = integration.flow.SteinelConfigFlow()
+    flow.context = {}
+    info = types.SimpleNamespace(
+        address="AA:BB:CC:DD:EE:FF",
+        name="Test light",
+        connectable=True,
+        service_uuids=[integration.flow.MESH_PROXY_SERVICE],
+        manufacturer_data={},
+    )
+    assert asyncio.run(flow.async_step_bluetooth(info))["step_id"] == "reset_help"
+    result = asyncio.run(flow.async_step_reset_help({"existing_mesh": True}))
+    assert result["step_id"] == "mesh_import"
+
+
+def test_invalid_json_stays_in_import_form(integration):
+    flow = integration.flow.SteinelConfigFlow()
+    result = asyncio.run(flow.async_step_mesh_import({"mesh_json": "invalid"}))
+    assert result["errors"] == {"base": "invalid_mesh_export"}
+    assert flow._mesh_export is None
+
+
+@pytest.fixture
+def imported_flow(integration):
+    flow = integration.flow.SteinelConfigFlow()
+    flow._address = "AA:BB:CC:DD:EE:FF"
+    export = {
+        "netKeys": [{"index": 4, "key": "11" * 16}],
+        "appKeys": [{"index": 9, "boundNetKey": 4, "key": "22" * 16}],
+        "nodes": [
+            {
+                "name": "Test lamp",
+                "unicastAddress": "000A",
+                "deviceKey": "33" * 16,
+                "netKeys": [{"index": 4}],
+                "appKeys": [{"index": 9}],
+                "elements": [
+                    {"index": 0, "models": [{"modelId": "1000", "bind": [9]}]}
+                ],
+            }
+        ],
+    }
+    assert (
+        asyncio.run(flow.async_step_mesh_import({"mesh_json": json.dumps(export)}))[
+            "step_id"
+        ]
+        == "mesh_node"
+    )
+    assert (
+        asyncio.run(flow.async_step_mesh_node({"node": "000A"}))["step_id"]
+        == "mesh_credentials"
+    )
+    return flow
+
+
+def _credentials():
+    return {
+        "app_key_index": "9",
+        "source_address": "7FFE",
+        "iv_index": 0,
+        "sequence": 0,
+    }
+
+
+def test_full_import_flow_creates_entry_and_discards_export(imported_flow):
+    result = asyncio.run(imported_flow.async_step_mesh_credentials(_credentials()))
+    assert result["type"] == "create_entry"
+    assert result["title"] == "Test lamp"
+    assert result["data"]["address"] == "AA:BB:CC:DD:EE:FF"
+    assert result["data"]["source_address"] == 0x7FFE
+    assert result["data"]["unicast_address"] == 10
+    assert result["data"]["existing_mesh"]
+    assert "mesh_json" not in result["data"]
+    assert imported_flow._mesh_export is None
+
+
+def test_duplicate_sender_is_rejected(imported_flow):
+    imported_flow._async_current_entries = lambda: [
+        types.SimpleNamespace(data={"net_key": "11" * 16, "source_address": 0x7FFE})
+    ]
+    result = asyncio.run(imported_flow.async_step_mesh_credentials(_credentials()))
+    assert result["errors"] == {"base": "invalid_mesh_credentials"}
+
+
+def test_same_mesh_node_cannot_be_imported_twice(imported_flow):
+    imported_flow._async_current_entries = lambda: [
+        types.SimpleNamespace(
+            data={
+                "net_key": "11" * 16,
+                "source_address": 0x7FFD,
+                "unicast_address": 10,
+            }
+        )
+    ]
+    result = asyncio.run(imported_flow.async_step_mesh_credentials(_credentials()))
+    assert result == {"type": "abort", "reason": "already_configured"}
+
+
+def test_proxy_uses_imported_source_before_filter_configuration(
+    integration, monkeypatch
+):
+    coordinator = _coordinator(integration)
+    coordinator.entry.options = {}
+    coordinator.entry.title = "Test lamp"
+    coordinator._async_ble_device = AsyncMock(return_value=object())
+    transport = types.SimpleNamespace(
+        connect=AsyncMock(), subscribe=AsyncMock(), has_service=lambda _: True
+    )
+    node = types.SimpleNamespace(src=1, handle_pdu=AsyncMock())
+
+    async def initialize_filter():
+        assert node.src == 0x7FFE
+
+    node.initialize_proxy_filter = AsyncMock(side_effect=initialize_filter)
+    monkeypatch.setattr(
+        integration.coordinator, "MeshGattTransport", Mock(return_value=transport)
+    )
+    monkeypatch.setattr(integration.coordinator, "MeshNode", Mock(return_value=node))
+    asyncio.run(coordinator._async_connect_proxy_attempt())
+    assert coordinator.node is node
+    node.initialize_proxy_filter.assert_awaited_once()

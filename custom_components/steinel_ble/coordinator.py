@@ -34,10 +34,12 @@ from .const import (
     CONF_DISCONNECT_WHEN_IDLE,
     CONF_ELEMENT_COUNT,
     CONF_ELEMENTS,
+    CONF_EXISTING_MESH,
     CONF_FIRMWARE,
     CONF_HARDWARE,
     CONF_HASH_ID,
     CONF_IDLE_DISCONNECT_DELAY,
+    CONF_IMPORTED_ELEMENTS,
     CONF_IV_INDEX,
     CONF_LIGHT_STATES,
     CONF_MODEL_SCHEMA_VERSION,
@@ -50,6 +52,7 @@ from .const import (
     CONF_SENSOR_PROPERTIES,
     CONF_SENSOR_SCHEMA_VERSION,
     CONF_SEQUENCE,
+    CONF_SOURCE_ADDRESS,
     CONF_STATIC_OOB,
     CONF_UNICAST_ADDRESS,
     DEFAULT_ADVERTISEMENT_TIMEOUT,
@@ -72,6 +75,7 @@ from .const import (
     MODEL_GENERIC_ONOFF_SERVER,
     MODEL_LIGHT_CTL_SERVER,
     MODEL_LIGHT_HSL_SERVER,
+    MODEL_LIGHT_LC_SERVER,
     MODEL_LIGHT_LIGHTNESS_SERVER,
     MODEL_SCHEMA_VERSION,
     MODEL_STEINEL_SENSOR_EXTENSION,
@@ -86,6 +90,7 @@ from .const import (
     OP_LIGHT_HSL_GET,
     OP_LIGHT_HSL_SET,
     OP_LIGHT_HSL_STATUS,
+    OP_LIGHT_LC_ONOFF_GET,
     OP_LIGHT_LC_ONOFF_SET,
     OP_LIGHT_LC_ONOFF_STATUS,
     OP_LIGHT_LC_PROPERTY_GET,
@@ -198,6 +203,19 @@ class SteinelCoordinator:
 
     async def async_setup(self) -> None:
         """Provision when needed, then connect and configure the node."""
+        imported = self.entry.data.get(CONF_EXISTING_MESH, False)
+        if imported and not all(
+            self.entry.data.get(key)
+            for key in (
+                CONF_NET_KEY,
+                CONF_APP_KEY,
+                CONF_DEVICE_KEY,
+                CONF_IMPORTED_ELEMENTS,
+            )
+        ):
+            raise ConfigEntryError(
+                "Imported Mesh credentials or composition are missing"
+            )
         self._start_advertisement_monitor()
         if CONF_NET_KEY not in self.entry.data:
             self._update_entry(
@@ -210,16 +228,16 @@ class SteinelCoordinator:
                 }
             )
         try:
-            if (
+            if not imported and (
                 CONF_DEVICE_KEY in self.entry.data
                 and self.entry.data.get(CONF_NODE_STATE) == NODE_PENDING
                 and self._advertises(MESH_PROVISIONING_SERVICE)
             ):
                 self._remove_entry_keys(CONF_DEVICE_KEY, CONF_ELEMENT_COUNT)
-            if CONF_DEVICE_KEY not in self.entry.data:
+            if not imported and CONF_DEVICE_KEY not in self.entry.data:
                 await self._async_provision()
             await self._async_connect_proxy()
-            if (
+            if imported or (
                 not self.entry.data.get(CONF_ELEMENTS)
                 or self.entry.data.get(CONF_MODEL_SCHEMA_VERSION, 0)
                 < MODEL_SCHEMA_VERSION
@@ -621,6 +639,7 @@ class SteinelCoordinator:
             float(self._option(CONF_COMMAND_TIMEOUT, DEFAULT_COMMAND_TIMEOUT)),
         )
         transport.handler = node.handle_pdu
+        node.src = self.entry.data.get(CONF_SOURCE_ADDRESS, 0x0001)
         self.transport, self.node = transport, node
         await node.initialize_proxy_filter()
         self.last_connected = datetime.now(UTC)
@@ -628,9 +647,14 @@ class SteinelCoordinator:
 
     async def _async_configure(self) -> None:
         assert self.node is not None
-        self.elements = await self.node.configure(
-            self.entry.data.get(CONF_ELEMENT_COUNT, 1)
-        )
+        if self.entry.data.get(CONF_EXISTING_MESH):
+            self.elements = self._deserialize_elements(
+                self.entry.data[CONF_IMPORTED_ELEMENTS]
+            )
+        else:
+            self.elements = await self.node.configure(
+                self.entry.data.get(CONF_ELEMENT_COUNT, 1)
+            )
         self._update_entry(
             {
                 CONF_ELEMENTS: self._serialize_elements(self.elements),
@@ -654,6 +678,7 @@ class SteinelCoordinator:
                     MODEL_LIGHT_LIGHTNESS_SERVER,
                     MODEL_LIGHT_CTL_SERVER,
                     MODEL_LIGHT_HSL_SERVER,
+                    MODEL_LIGHT_LC_SERVER,
                 }
             )
             if not is_light:
@@ -667,6 +692,8 @@ class SteinelCoordinator:
                 queries.append((OP_LIGHT_CTL_GET, OP_LIGHT_CTL_STATUS))
             if MODEL_LIGHT_HSL_SERVER in element.sig_models:
                 queries.append((OP_LIGHT_HSL_GET, OP_LIGHT_HSL_STATUS))
+            if MODEL_LIGHT_LC_SERVER in element.sig_models:
+                queries.append((OP_LIGHT_LC_ONOFF_GET, OP_LIGHT_LC_ONOFF_STATUS))
             for opcode, response in queries:
                 try:
                     await self.node.request(

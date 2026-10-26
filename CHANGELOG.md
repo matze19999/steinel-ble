@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.6.0
+
+- Import already provisioned devices from a STEINEL Connect Mesh JSON export.
+  Existing keys, unicast addresses and model bindings are reused without
+  resetting or provisioning the lamp, preserving native groups and settings.
+- Select the exported device and its bound AppKey, with a separate Home
+  Assistant source address and explicit IV Index and sequence state.
+- Keep imported model bindings unchanged during setup, reload and model rescans.
+- Expose secondary Light LC elements from imported compositions as lights.
+
 ## 0.5.0
 
 - Fixed STEINEL Sensor Extension replies whose echoed Property ID was

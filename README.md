@@ -26,6 +26,10 @@ SDK. See [Legal](#legal).
 
 ## Features
 
+- **Existing Mesh import** - import a STEINEL Connect App JSON export to use
+  already provisioned lamps without resetting them. Groups, scenes, motion
+  automation, twilight and basic-light settings remain in the native Mesh.
+
 - **Bluetooth discovery** - devices advertising the Bluetooth Mesh
   Provisioning or Proxy service are discovered automatically by Home
   Assistant.
@@ -139,6 +143,43 @@ access to the provisioned device.
 
 ### Device already belongs to another mesh
 
+To keep the existing Mesh, enable **Keep existing Mesh: import STEINEL App
+JSON** during manual setup or in the discovered device's setup dialog:
+
+1. Export the network from STEINEL Connect and paste the JSON file's contents
+   into the import form.
+2. Select the exported node matching the lamp's Bluetooth address and choose
+   an AppKey already bound to its models. The app's provisioner is omitted.
+3. Reserve a separate, unused unicast source address for this Home Assistant
+   entry in the network's address allocation. Enter it as hexadecimal. Do not
+   reuse the phone's or a lamp element's address. Each imported HA entry needs
+   its own source address, and future provisioners must not allocate it.
+4. Enter the network's current IV Index and the source's next unused sequence
+   number, both as decimal numbers. Standard JSON exports, including STEINEL
+   exports, may omit these runtime values. The IV Index is normally 0 in new
+   networks, but must match the live network. Sequence 0 is suitable only for
+   a source that has never transmitted; restoring an old source requires a
+   value above every sequence it previously used.
+5. Close STEINEL Connect to release its BLE connection, then finish setup.
+
+The integration connects directly to the existing Mesh Proxy. It does not
+reset the lamp, add AppKeys, rebind models, change subscriptions, or overwrite
+scenes. Only models already bound to the chosen AppKey are exposed. Model
+rescans restore these imported bindings and repeat read-only sensor detection.
+Control commands and explicit edits of configuration entities still change
+the corresponding live device states and settings.
+
+Only the chosen node's credentials and model composition are stored; the full
+export is not retained. Keys are redacted from diagnostics. Keep exports
+private and do not add them to this repository. Finish any ongoing Mesh Key
+Refresh before importing. If the imported IV Index is incorrect, authenticated
+communication fails and setup is retried; the integration does not fall back
+to resetting the lamp. Re-export and recreate the entry if model bindings
+change in the app.
+
+If you prefer to replace the existing Mesh, leave the import option disabled
+and follow the reset procedure below.
+
 The integration can reset a provisioned STEINEL device without knowing its
 existing mesh keys. The lamp only accepts this command during a short window
 after mains power is applied, and it must not already be connected to another
@@ -235,7 +276,7 @@ For a failed automatic reset, first verify that:
   for properties not implemented by a device remain unavailable.
 - Scene management, Light LC parameter configuration, firmware updates and
   Bluetooth Mesh BLOB/DFU are not currently exposed.
-- There is no import workflow for an existing mesh. A device is either
+- A device without imported credentials is either
   provisioned as new or reset from its previous network during setup.
 
 ## Development

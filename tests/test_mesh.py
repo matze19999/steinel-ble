@@ -9,6 +9,8 @@ import types
 from pathlib import Path
 from unittest.mock import Mock
 
+import pytest
+
 
 def _load_package():
     root = Path(__file__).parents[1] / "custom_components/steinel_ble"
@@ -32,6 +34,7 @@ def _load_package():
 
 
 const, gatt, mesh, provisioning = _load_package()
+crypto = sys.modules[f"{mesh.__package__}.crypto"]
 
 
 def test_opcode_round_trip() -> None:
@@ -171,3 +174,184 @@ def test_concurrent_proxy_sends_do_not_interleave_fragments():
         assert received == [(0, b"first message"), (0, b"second message")]
 
     asyncio.run(run())
+
+
+def _secure_beacon(index, flags=0, key=bytes(16)):
+    decoder = crypto.MeshBeaconDecoder(key)
+    body = bytes([flags]) + decoder.network_id + index.to_bytes(4, "big")
+    return b"\x01" + body + crypto.aes_cmac(decoder.beacon_key, body)[:8]
+
+
+def test_authenticated_beacon_corrects_iv_before_filter_without_resetting_sequence():
+    node = _receiving_node()
+    node.sequence = 78
+    node.src = 0x5555
+    sent = []
+
+    async def send(pdu_type, pdu):
+        sent.append((pdu_type, pdu))
+
+    node.transport = types.SimpleNamespace(send=send)
+
+    async def run():
+        await node.handle_pdu(1, _secure_beacon(3))
+        assert await node.synchronize_iv_index(timeout=0.01)
+        assert node.iv_index == 3
+        assert node.iv_state_verified
+        assert node.sequence == 78
+        node.sequence_changed.assert_not_called()
+        await node.initialize_proxy_filter()
+
+    asyncio.run(run())
+    assert node.sequence == 79
+    assert node.src == 0x5555
+    assert sent == [
+        (
+            2,
+            mesh.network_encrypt(
+                node.net_keys, 3, 0x80, 78, 0x5555, 0, b"\x00\x01", nonce_type=3
+            ),
+        )
+    ]
+
+
+def test_unverified_iv_bit_and_invalid_beacon_cannot_change_iv_state():
+    node = _receiving_node()
+    mismatch = mesh.network_encrypt(node.net_keys, 1, 5, 1, 2, 1, b"test")
+
+    async def run():
+        await node.handle_pdu(0, mismatch)
+        await node.handle_pdu(1, _secure_beacon(1, key=bytes([4]) * 16))
+        assert not await node.synchronize_iv_index(timeout=0.001)
+
+    asyncio.run(run())
+    assert node.iv_index == 0
+    assert not node.iv_state_verified
+    assert node.sequence == 0
+
+
+def test_older_beacon_cannot_roll_back_persisted_iv_index():
+    node = _receiving_node()
+    node.iv_index = 3
+
+    async def run():
+        await node.handle_pdu(1, _secure_beacon(1))
+        assert not await node.synchronize_iv_index(timeout=0.001)
+
+    asyncio.run(run())
+    assert node.iv_index == 3
+    assert node.rx_stats["beacon_stale"] == 1
+
+
+def test_completed_iv_update_cannot_be_reversed_by_stale_beacon():
+    node = _receiving_node()
+    node.iv_index = 3
+    node.iv_state_verified = True
+
+    async def run():
+        await node.handle_pdu(1, _secure_beacon(3, flags=2))
+        assert not await node.synchronize_iv_index(timeout=0.001)
+
+    asyncio.run(run())
+    assert not node.iv_update
+    assert node.rx_stats["beacon_stale"] == 1
+
+
+def test_iv_cannot_change_in_the_middle_of_outgoing_traffic():
+    node = _receiving_node()
+
+    async def run():
+        await node.handle_pdu(1, _secure_beacon(3))
+        await node.synchronize_iv_index(timeout=0.01)
+        node._take_sequence()
+        await node.handle_pdu(1, _secure_beacon(4))
+        with pytest.raises(RuntimeError, match="precede outgoing"):
+            await node.synchronize_iv_index(timeout=0.01)
+
+    asyncio.run(run())
+    assert node.iv_index == 3
+    assert node.beacon.iv_index == 4
+
+
+def test_iv_update_receives_both_indexes_and_transmits_previous_index():
+    node = _receiving_node()
+    writes = []
+
+    async def send(_type, pdu):
+        writes.append(pdu)
+
+    node.transport = types.SimpleNamespace(send=send)
+
+    async def run():
+        await node.handle_pdu(1, _secure_beacon(3, flags=2))
+        assert await node.synchronize_iv_index(timeout=0.01)
+        assert node.transmit_iv_index == 2
+        await node.send_access(2, 0x8201)
+        for index in (2, 3):
+            upper = mesh.upper_transport_encrypt(
+                node.app_key, 1, 100, 2, 1, index, b"\x82\x04\x01"
+            )
+            lower = bytes([0x40 | mesh.k4(node.app_key)]) + upper
+            pdu = mesh.network_encrypt(node.net_keys, index, 5, 100, 2, 1, lower)
+            await node.handle_pdu(0, pdu)
+
+    asyncio.run(run())
+    assert node.rx_stats["access_authenticated"] == 2
+    assert node.access_received.call_count == 2
+    outgoing = mesh.network_decrypt(node.net_keys, 2, writes[0])
+    assert outgoing.dst == 2
+    plain = mesh.upper_transport_decrypt(
+        node.app_key, 1, outgoing.seq, node.src, 2, 2, outgoing.lower_transport[1:]
+    )
+    assert plain == b"\x82\x01"
+
+
+def test_initial_network_traffic_cannot_send_before_iv_synchronization():
+    node = _receiving_node()
+    node.iv_sync_pending = True
+    upper = mesh.upper_transport_encrypt(node.app_key, 1, 1, 2, 1, 0, b"\x82\x04\x01")
+    lower = bytes([0x40 | mesh.k4(node.app_key)]) + upper
+    pdu = mesh.network_encrypt(node.net_keys, 0, 5, 1, 2, 1, lower)
+    asyncio.run(node.handle_pdu(0, pdu))
+    assert node.rx_stats["network_authenticated"] == 1
+    assert node.sequence == 0
+    node.access_received.assert_not_called()
+
+
+def test_segmented_messages_keep_their_own_iv_index_during_update():
+    node = _receiving_node()
+    node.iv_index = 3
+    node.iv_update = True
+    acks = []
+
+    async def send(_type, pdu):
+        acks.append(pdu)
+
+    node.transport = types.SimpleNamespace(send=send)
+    sequences = {}
+    for iv, marker in ((2, b"a"), (3, b"b")):
+        upper = mesh.upper_transport_encrypt(
+            node.app_key, 1, 100, 2, 1, iv, b"\x82\x04" + marker * 23
+        )
+        chunks = [upper[pos : pos + 12] for pos in range(0, len(upper), 12)]
+        sequences[iv] = []
+        for offset, chunk in enumerate(chunks):
+            header = ((100 << 10) | (offset << 5) | (len(chunks) - 1)).to_bytes(
+                3, "big"
+            )
+            lower = bytes([0xC0 | mesh.k4(node.app_key)]) + header + chunk
+            sequences[iv].append(
+                mesh.network_encrypt(node.net_keys, iv, 5, 100 + offset, 2, 1, lower)
+            )
+
+    async def run():
+        for packets in zip(sequences[2], sequences[3], strict=True):
+            for packet in packets:
+                await node.handle_pdu(0, packet)
+
+    asyncio.run(run())
+    assert node.access_received.call_count == 2
+    node.access_received.assert_any_call(2, 0x8204, b"a" * 23)
+    node.access_received.assert_any_call(2, 0x8204, b"b" * 23)
+    assert len(acks) == 2
+    assert all(mesh.network_decrypt(node.net_keys, 2, ack).ctl for ack in acks)

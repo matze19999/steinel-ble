@@ -12,6 +12,8 @@ from cryptography.exceptions import InvalidTag
 
 from .const import DEFAULT_TTL
 from .crypto import (
+    MeshBeacon,
+    MeshBeaconDecoder,
     NetworkKeys,
     k4,
     network_decrypt,
@@ -96,6 +98,7 @@ class _InboundSegments:
     aid: int
     szmic: int
     seg_n: int
+    iv_index: int
     parts: dict[int, bytes] = field(default_factory=dict)
 
 
@@ -120,6 +123,13 @@ class MeshNode:
         self.app_key = app_key
         self.device_key = device_key
         self.iv_index = iv_index
+        self.iv_update = False
+        self.iv_state_verified = False
+        self.beacon: MeshBeacon | None = None
+        self._beacon_decoder = MeshBeaconDecoder(net_key)
+        self._beacon_event = asyncio.Event()
+        self._iv_sync_open = True
+        self.iv_sync_pending = False
         self.sequence = sequence
         self.primary_address = primary_address
         self.sequence_changed = sequence_changed
@@ -130,7 +140,7 @@ class MeshNode:
         self._requests: list[
             tuple[int, int | None, asyncio.Future[tuple[int, bytes]]]
         ] = []
-        self._segments: dict[tuple[int, int], _InboundSegments] = {}
+        self._segments: dict[tuple[int, int, int], _InboundSegments] = {}
         self._segment_acks: dict[int, asyncio.Event] = {}
         self._vendor_requests: list[
             tuple[int | None, asyncio.Future[tuple[int, int, bytes]]]
@@ -148,12 +158,70 @@ class MeshNode:
         if self.sequence > 0xFFFFFE:
             raise RuntimeError("Bluetooth Mesh sequence space exhausted")
         value = self.sequence
+        self._iv_sync_open = False
         self.sequence += 1
         self.sequence_changed(self.sequence)
         return value
 
+    @property
+    def transmit_iv_index(self) -> int:
+        """Use the previous IV Index while IV Update is in progress."""
+        return self.iv_index - 1 if self.iv_update else self.iv_index
+
+    async def synchronize_iv_index(self, timeout: float = 10) -> bool:
+        """Verify initial IV state before sending any encrypted PDU."""
+        if not self._iv_sync_open:
+            raise RuntimeError("IV synchronization must precede outgoing messages")
+        self.iv_sync_pending = True
+        try:
+            try:
+                await asyncio.wait_for(self._beacon_event.wait(), timeout)
+            except TimeoutError:
+                return False
+            if not self._iv_sync_open:
+                raise RuntimeError("Cannot change IV state after outgoing messages")
+            assert self.beacon is not None
+            self.iv_index = self.beacon.iv_index
+            self.iv_update = self.beacon.iv_update
+            self.iv_state_verified = True
+            return True
+        finally:
+            self.iv_sync_pending = False
+
     async def handle_pdu(self, pdu_type: int, payload: bytes) -> None:
         """Receive a Proxy Network PDU."""
+        if pdu_type == 0x01:
+            try:
+                beacon = self._beacon_decoder.decode(payload)
+            except (ValueError, InvalidTag):
+                self.rx_stats["beacon_invalid"] += 1
+                return
+            self.rx_stats["beacon_authenticated"] += 1
+            if (
+                beacon.iv_index < self.iv_index
+                or (
+                    self.iv_state_verified
+                    and beacon.iv_index == self.iv_index
+                    and not self.iv_update
+                    and beacon.iv_update
+                )
+                or (
+                    self.beacon is not None
+                    and (
+                        beacon.iv_index < self.beacon.iv_index
+                        or (
+                            beacon.iv_index == self.beacon.iv_index
+                            and not self.beacon.iv_update
+                            and beacon.iv_update
+                        )
+                    )
+                )
+            ):
+                self.rx_stats["beacon_stale"] += 1
+                return
+            self.beacon = beacon
+            self._beacon_event.set()
+            return
         if pdu_type != 0x00:
             return
         if len(payload) < 14:
@@ -162,7 +230,10 @@ class MeshNode:
         if payload[0] & 0x7F != self.net_keys.nid:
             self.rx_stats["network_other_key"] += 1
             return
-        if payload[0] >> 7 != self.iv_index & 1:
+        receive_iv_index = self.iv_index
+        if payload[0] >> 7 != receive_iv_index & 1 and self.iv_update:
+            receive_iv_index -= 1
+        if payload[0] >> 7 != receive_iv_index & 1:
             self.rx_stats["network_iv_mismatch"] += 1
             if self.rx_stats["network_iv_mismatch"] == 1:
                 _LOGGER.warning(
@@ -172,7 +243,7 @@ class MeshNode:
                 )
             return
         try:
-            network = network_decrypt(self.net_keys, self.iv_index, payload)
+            network = network_decrypt(self.net_keys, receive_iv_index, payload)
         except (ValueError, InvalidTag):
             self.rx_stats["network_invalid"] += 1
             if self.rx_stats["network_invalid"] == 1:
@@ -182,6 +253,9 @@ class MeshNode:
                 )
             return
         self.rx_stats["network_authenticated"] += 1
+        if self.iv_sync_pending:
+            # Do not send segment acknowledgements before IV state is settled.
+            return
         lower = network.lower_transport
         if not lower:
             return
@@ -193,7 +267,14 @@ class MeshNode:
         aid = lower[0] & 0x3F
         if not segmented:
             await self._handle_upper(
-                network.src, network.dst, network.seq, akf, aid, 0, lower[1:]
+                network.src,
+                network.dst,
+                network.seq,
+                akf,
+                aid,
+                0,
+                lower[1:],
+                iv_index=receive_iv_index,
             )
             return
         if len(lower) < 4:
@@ -206,11 +287,11 @@ class MeshNode:
         seq_auth = (network.seq & ~0x1FFF) | seq_zero
         if seq_zero > network.seq & 0x1FFF:
             seq_auth -= 0x2000
-        key = (network.src, seq_zero)
+        key = (network.src, receive_iv_index, seq_zero)
         item = self._segments.get(key)
         if item is None:
             item = self._segments[key] = _InboundSegments(
-                seq_auth, network.dst, akf, aid, szmic, seg_n
+                seq_auth, network.dst, akf, aid, szmic, seg_n, receive_iv_index
             )
         if item.seg_n != seg_n or seg_o > seg_n:
             return
@@ -221,7 +302,14 @@ class MeshNode:
         await self._send_segment_ack(network.src, seq_zero, (1 << (seg_n + 1)) - 1)
         upper = b"".join(item.parts[index] for index in range(seg_n + 1))
         await self._handle_upper(
-            network.src, item.dst, item.seq_auth, item.akf, item.aid, item.szmic, upper
+            network.src,
+            item.dst,
+            item.seq_auth,
+            item.akf,
+            item.aid,
+            item.szmic,
+            upper,
+            iv_index=item.iv_index,
         )
 
     def _handle_control(self, src: int, lower: bytes) -> None:
@@ -241,6 +329,8 @@ class MeshNode:
         aid: int,
         szmic: int,
         upper: bytes,
+        *,
+        iv_index: int | None = None,
     ) -> None:
         key = (
             self.app_key
@@ -259,7 +349,7 @@ class MeshNode:
                 seq_auth,
                 src,
                 dst,
-                self.iv_index,
+                self.iv_index if iv_index is None else iv_index,
                 upper,
                 szmic=szmic,
             )
@@ -289,7 +379,7 @@ class MeshNode:
         seq = self._take_sequence()
         pdu = network_encrypt(
             self.net_keys,
-            self.iv_index,
+            self.transmit_iv_index,
             0x80,
             seq,
             self.src,
@@ -309,7 +399,7 @@ class MeshNode:
         seq = self._take_sequence() if sequence is None else sequence
         pdu = network_encrypt(
             self.net_keys,
-            self.iv_index,
+            self.transmit_iv_index,
             (0x80 if ctl else 0) | DEFAULT_TTL,
             seq,
             self.src,
@@ -338,7 +428,7 @@ class MeshNode:
                 first_seq,
                 self.src,
                 dst,
-                self.iv_index,
+                self.transmit_iv_index,
                 encode_opcode(opcode) + parameters,
             )
             if len(upper) <= 15:

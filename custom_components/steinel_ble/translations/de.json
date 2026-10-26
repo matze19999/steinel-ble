@@ -38,7 +38,7 @@
       },
       "mesh_credentials": {
         "title": "Mesh-Sender und Laufzeitdaten",
-        "description": "Einen bereits gebundenen AppKey wählen. In der Adressvergabe des Meshs eine eigene freie Unicast-Senderadresse für diesen HA-Eintrag reservieren; niemals die Adresse des Handys oder einer Lampe verwenden. Den aktuellen IV Index eingeben (bei neuen Netzen meist 0); er kann im Export fehlen. Sequenznummer 0 gilt nur für eine bisher nie verwendete Senderadresse. Bei einer zuvor verwendeten Adresse deren nächste unbenutzte Sequenznummer eingeben. Adressen sind hexadezimal (z. B. 7FFE), IV Index und Sequenznummer dezimal.",
+        "description": "Einen bereits gebundenen AppKey wählen. In der Adressvergabe des Meshs eine eigene freie Unicast-Senderadresse für diesen HA-Eintrag reservieren; niemals die Adresse des Handys oder einer Lampe verwenden. Den aktuellen IV Index eingeben, falls bekannt, andernfalls 0 als Startwert. Beim Verbinden prüft die Integration Mesh-Beacons mit dem NetKey und gleicht den IV-Zustand automatisch ab. Sequenznummer 0 gilt nur für eine bisher nie verwendete Senderadresse. Bei einer zuvor verwendeten Adresse deren nächste unbenutzte Sequenznummer eingeben. Adressen sind hexadezimal (z. B. 7FFE), IV Index und Sequenznummer dezimal.",
         "data": {"app_key_index": "AppKey-Index", "source_address": "Reservierte HA-Senderadresse (hexadezimal)", "iv_index": "Aktueller IV Index (dezimal)", "sequence": "Nächste unbenutzte Sequenznummer (dezimal)"}
       }
     }

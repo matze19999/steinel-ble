@@ -313,9 +313,19 @@ def test_proxy_uses_imported_source_before_filter_configuration(
     coordinator.entry.title = "Test lamp"
     coordinator._async_ble_device = AsyncMock(return_value=object())
     transport = types.SimpleNamespace(
-        connect=AsyncMock(), subscribe=AsyncMock(), has_service=lambda _: True
+        connect=AsyncMock(),
+        subscribe=AsyncMock(),
+        has_service=lambda _: True,
+        disconnect=AsyncMock(),
     )
-    node = types.SimpleNamespace(src=1, handle_pdu=AsyncMock())
+    coordinator.address = coordinator.entry.data["address"]
+    node = types.SimpleNamespace(
+        src=1,
+        handle_pdu=AsyncMock(),
+        iv_index=0,
+        synchronize_iv_index=AsyncMock(return_value=False),
+        rx_stats={"network_iv_mismatch": 0},
+    )
 
     async def initialize_filter():
         assert node.src == 0x7FFE
@@ -433,6 +443,93 @@ def test_initial_sensor_queries_reuse_connected_node_before_available(integratio
     )
     assert result is coordinator.node
     coordinator._async_connect_proxy.assert_not_awaited()
+
+
+def _beacon_connection(integration, monkeypatch, *, beacon=True, flags=0):
+    coordinator = _coordinator(integration)
+    coordinator.entry.options = {}
+    coordinator.entry.title = "Test lamp"
+    coordinator.entry.data["sequence"] = 78
+    coordinator.address = coordinator.entry.data["address"]
+    coordinator._async_ble_device = AsyncMock(return_value=object())
+    crypto = importlib.import_module(f"{integration.coordinator.__package__}.crypto")
+    key = bytes.fromhex(coordinator.entry.data["net_key"])
+    decoder = crypto.MeshBeaconDecoder(key)
+    transport = types.SimpleNamespace(
+        connect=AsyncMock(),
+        disconnect=AsyncMock(),
+        send=AsyncMock(),
+        has_service=lambda _: True,
+    )
+
+    async def subscribe():
+        # A proxy can deliver its beacon during start_notify itself.
+        assert transport.handler is not None
+        if beacon:
+            body = bytes([flags]) + decoder.network_id + (3).to_bytes(4, "big")
+            payload = b"\x01" + body + crypto.aes_cmac(decoder.beacon_key, body)[:8]
+            await transport.handler(1, payload)
+        else:
+            packet = crypto.network_encrypt(
+                crypto.NetworkKeys.derive(key), 3, 5, 1, 2, 1, b"test"
+            )
+            await transport.handler(0, packet)
+
+    transport.subscribe = AsyncMock(side_effect=subscribe)
+    monkeypatch.setattr(
+        integration.coordinator, "MeshGattTransport", Mock(return_value=transport)
+    )
+    return coordinator, transport, crypto
+
+
+@pytest.mark.parametrize("flags", [0, 2])
+def test_connection_authenticates_immediate_beacon_before_proxy_filter(
+    integration, monkeypatch, flags
+):
+    coordinator, transport, crypto = _beacon_connection(
+        integration, monkeypatch, flags=flags
+    )
+    asyncio.run(coordinator._async_connect_proxy_attempt())
+    assert coordinator.entry.data["iv_index"] == 3
+    assert coordinator.entry.data["iv_update"] is bool(flags & 2)
+    assert coordinator.entry.data["sequence"] == 79
+    expected = crypto.network_encrypt(
+        coordinator.node.net_keys,
+        2 if flags & 2 else 3,
+        0x80,
+        78,
+        0x7FFE,
+        0,
+        b"\x00\x01",
+        nonce_type=3,
+    )
+    transport.send.assert_awaited_once_with(2, expected)
+    coordinator._async_provision.assert_not_awaited()
+
+
+def test_connection_fails_clearly_on_iv_mismatch_without_valid_beacon(
+    integration, monkeypatch
+):
+    coordinator, transport, _crypto = _beacon_connection(
+        integration, monkeypatch, beacon=False
+    )
+    node_class = integration.coordinator.MeshNode
+    synchronize = node_class.synchronize_iv_index
+
+    async def short_wait(node):
+        return await synchronize(node, timeout=0.001)
+
+    monkeypatch.setattr(node_class, "synchronize_iv_index", short_wait)
+    with pytest.raises(
+        integration.coordinator.SteinelConnectionError, match="IV Index"
+    ):
+        asyncio.run(coordinator._async_connect_proxy_attempt())
+    transport.disconnect.assert_awaited_once()
+    transport.send.assert_not_awaited()
+    assert coordinator.node is None
+    assert coordinator.transport is None
+    assert coordinator.entry.data["iv_index"] == 0
+    assert coordinator.entry.data["sequence"] == 78
 
 
 def test_reconnect_monitor_recovers_without_entry_reload(integration, monkeypatch):

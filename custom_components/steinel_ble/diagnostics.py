@@ -47,6 +47,25 @@ async def async_get_config_entry_diagnostics(
             "mesh_receive_counts": (
                 dict(coordinator.node.rx_stats) if coordinator.node else {}
             ),
+            "mesh_iv_state": (
+                {
+                    "iv_index": coordinator.node.iv_index,
+                    "transmit_iv_index": coordinator.node.transmit_iv_index,
+                    "iv_update": coordinator.node.iv_update,
+                    "iv_state_verified": coordinator.node.iv_state_verified,
+                    "authenticated_beacon": (
+                        {
+                            "iv_index": coordinator.node.beacon.iv_index,
+                            "iv_update": coordinator.node.beacon.iv_update,
+                            "key_refresh": coordinator.node.beacon.key_refresh,
+                        }
+                        if coordinator.node.beacon
+                        else None
+                    ),
+                }
+                if coordinator.node
+                else None
+            ),
             "sensor_values": {
                 f"{address:04x}_{name}": value.value
                 for (address, name), value in coordinator.sensor_values.items()

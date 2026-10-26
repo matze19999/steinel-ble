@@ -7,6 +7,7 @@ fields are supplied in their on-air byte order.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from hmac import compare_digest
 
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 from cryptography.hazmat.primitives.ciphers.aead import AESCCM
@@ -57,6 +58,46 @@ def aes_ecb(key: bytes, block: bytes) -> bytes:
     """Encrypt one AES block in ECB mode."""
     encryptor = Cipher(algorithms.AES(key), modes.ECB()).encryptor()
     return encryptor.update(block) + encryptor.finalize()
+
+
+@dataclass(frozen=True)
+class MeshBeacon:
+    """Authenticated network state from a Secure or Private Mesh beacon."""
+
+    iv_index: int
+    iv_update: bool
+    key_refresh: bool
+
+
+class MeshBeaconDecoder:
+    """Authenticate beacons using material derived from the imported NetKey."""
+
+    def __init__(self, net_key: bytes) -> None:
+        self.network_id = k3(net_key)
+        self.beacon_key = k1(net_key, s1(b"nkbk"), b"id128\x01")
+        self.private_key = k1(net_key, s1(b"nkpk"), b"id128\x01")
+
+    def decode(self, payload: bytes) -> MeshBeacon:
+        if len(payload) == 22 and payload[0] == 0x01:
+            if not compare_digest(payload[2:10], self.network_id):
+                raise ValueError("Beacon belongs to another network")
+            expected = aes_cmac(self.beacon_key, payload[1:14])[:8]
+            if not compare_digest(expected, payload[14:]):
+                raise ValueError("Invalid beacon authentication")
+            flags = payload[1]
+            iv_index = int.from_bytes(payload[10:14], "big")
+        elif len(payload) == 27 and payload[0] == 0x02:
+            # Private beacons use CCM with a 13-byte nonce and a 64-bit tag.
+            plain = AESCCM(self.private_key, tag_length=8).decrypt(
+                payload[1:14], payload[14:], None
+            )
+            flags = plain[0]
+            iv_index = int.from_bytes(plain[1:5], "big")
+        else:
+            raise ValueError("Unsupported or malformed Mesh beacon")
+        if flags & 0xFC or (flags & 2 and iv_index == 0):
+            raise ValueError("Invalid Mesh beacon state")
+        return MeshBeacon(iv_index, bool(flags & 2), bool(flags & 1))
 
 
 def provisioning_encrypt(key: bytes, nonce: bytes, data: bytes) -> bytes:

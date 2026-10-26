@@ -41,6 +41,7 @@ from .const import (
     CONF_IDLE_DISCONNECT_DELAY,
     CONF_IMPORTED_ELEMENTS,
     CONF_IV_INDEX,
+    CONF_IV_UPDATE,
     CONF_LIGHT_STATES,
     CONF_MODEL_SCHEMA_VERSION,
     CONF_NET_KEY,
@@ -627,7 +628,6 @@ class SteinelCoordinator:
         if not transport.has_service(MESH_PROXY_SERVICE):
             await transport.disconnect()
             raise SteinelConnectionError("Mesh Proxy GATT service is unavailable")
-        await transport.subscribe()
         node = MeshNode(
             transport,
             bytes.fromhex(self.entry.data[CONF_NET_KEY]),
@@ -642,8 +642,43 @@ class SteinelCoordinator:
         )
         transport.handler = node.handle_pdu
         node.src = self.entry.data.get(CONF_SOURCE_ADDRESS, 0x0001)
+        node.iv_update = bool(self.entry.data.get(CONF_IV_UPDATE, False))
+        node.iv_state_verified = CONF_IV_UPDATE in self.entry.data
+        node.iv_sync_pending = bool(self.entry.data.get(CONF_EXISTING_MESH))
         self.transport, self.node = transport, node
-        await node.initialize_proxy_filter()
+        try:
+            # Attach the handler before subscribing: proxies may send their
+            # first authenticated beacon as soon as notifications are enabled.
+            await transport.subscribe()
+            if self.entry.data.get(CONF_EXISTING_MESH):
+                if await node.synchronize_iv_index():
+                    self._update_entry(
+                        {CONF_IV_INDEX: node.iv_index, CONF_IV_UPDATE: node.iv_update}
+                    )
+                    _LOGGER.info(
+                        "Authenticated Mesh IV Index %s (IV Update=%s) for %s",
+                        node.iv_index,
+                        node.iv_update,
+                        self.address,
+                    )
+                elif node.rx_stats["network_iv_mismatch"]:
+                    raise SteinelConnectionError(
+                        "Received Mesh traffic has an IVI mismatch with the IV Index, "
+                        "and no valid network beacon was received. Check the exported "
+                        "NetKey and current IV Index, and Bluetooth signal strength."
+                    )
+                else:
+                    _LOGGER.debug(
+                        "No authenticated Mesh beacon received for %s; "
+                        "using configured IV Index %s",
+                        self.address,
+                        node.iv_index,
+                    )
+            await node.initialize_proxy_filter()
+        except BaseException:
+            await transport.disconnect()
+            self.transport = self.node = None
+            raise
         self._connection_failed = False
         self.last_connected = datetime.now(UTC)
         self.last_error = None

@@ -154,10 +154,11 @@ JSON** during manual setup or in the discovered device's setup dialog:
    entry in the network's address allocation. Enter it as hexadecimal. Do not
    reuse the phone's or a lamp element's address. Each imported HA entry needs
    its own source address, and future provisioners must not allocate it.
-4. Enter the network's current IV Index and the source's next unused sequence
-   number, both as decimal numbers. Standard JSON exports, including STEINEL
-   exports, may omit these runtime values. The IV Index is normally 0 in new
-   networks, but must match the live network. Sequence 0 is suitable only for
+4. Enter the network's current IV Index if known, or use 0 as an initial value
+   when the export omits it. The integration authenticates Secure Network or
+   Mesh Private beacons with the imported NetKey and synchronizes the full
+   IV Index before sending commands. Enter the source's next unused sequence
+   number as a decimal number. Sequence 0 is suitable only for
    a source that has never transmitted; restoring an old source requires a
    value above every sequence it previously used.
 5. Close STEINEL Connect to release its BLE connection, then finish setup.
@@ -172,9 +173,15 @@ the corresponding live device states and settings.
 Only the chosen node's credentials and model composition are stored; the full
 export is not retained. Keys are redacted from diagnostics. Keep exports
 private and do not add them to this repository. Finish any ongoing Mesh Key
-Refresh before importing. If the imported IV Index is incorrect, authenticated
-communication fails and setup is retried; the integration does not fall back
-to resetting the lamp. Re-export and recreate the entry if model bindings
+Refresh before importing. On connection, the integration waits up to ten seconds
+for an authenticated beacon. Verified IV state is saved without resetting the
+sequence number or source address. During IV Update, the previous index is used
+for transmission and both current and previous-index replies are supported.
+If no beacon arrives, the configured IV state is used unless incoming traffic
+already indicates an IVI mismatch; that case fails with an explanatory connection
+error. No index is guessed from IVI alone and a persisted IV Index is never
+automatically rolled back. The integration does not reset the lamp.
+Re-export and recreate the entry if model bindings
 change in the app.
 
 If you prefer to replace the existing Mesh, leave the import option disabled
@@ -246,6 +253,10 @@ An `access_other_key` count indicates an application-key identifier mismatch;
 `access_invalid` includes failed Access authentication or malformed messages.
 These counters reset when the Mesh connection is recreated. Share the
 integration's diagnostics and debug log, not the original App JSON export.
+`mesh_iv_state` also shows the local and transmit IV Index, IV Update state,
+and the most recently authenticated beacon's public IV and flag fields. Beacon
+authentication follows the Bluetooth Mesh Protocol specification, including
+its Secure Network and Mesh Private beacon test vectors.
 
 ## How it works
 

@@ -38,7 +38,7 @@
       },
       "mesh_credentials": {
         "title": "Mesh sender and runtime state",
-        "description": "Choose an existing bound AppKey. Reserve a separate unused unicast source for this HA entry in your network's address allocation; never use the phone's or a lamp's address. Enter the current IV Index (usually 0 for a new network); the export may omit it. Sequence 0 is valid only for a source never used before. When restoring a previously used source, enter its next unused sequence. Addresses are hexadecimal (e.g. 7FFE); IV Index and sequence are decimal.",
+        "description": "Choose an existing bound AppKey. Reserve a separate unused unicast source for this HA entry in your network's address allocation; never use the phone's or a lamp's address. Enter the current IV Index if known, or 0 as an initial value. On connection, the integration verifies Mesh beacons with your NetKey and synchronizes IV state automatically. Sequence 0 is valid only for a source never used before. When restoring a previously used source, enter its next unused sequence. Addresses are hexadecimal (e.g. 7FFE); IV Index and sequence are decimal.",
         "data": {"app_key_index": "AppKey index", "source_address": "Reserved HA source address (hexadecimal)", "iv_index": "Current IV Index (decimal)", "sequence": "Next unused sequence number (decimal)"}
       }
     }

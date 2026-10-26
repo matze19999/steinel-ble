@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.6.3
+
+- Synchronize imported Mesh IV state from authenticated Secure Network and
+  Mesh Private beacons before configuring the proxy or sending commands.
+- Install the Mesh notification handler before subscribing so an immediate
+  initial beacon is not lost. Persist verified IV state without resetting the
+  source address or sequence number, and reject stale IV state.
+- Handle the IV Update flag: send with the previous IV Index while an update
+  is active and decrypt current/previous-index responses with their own nonce.
+- Report a clear connection error when traffic has a mismatching IVI and no
+  authenticated beacon can be received, instead of running all sensor probes.
+- Include verified beacon and transmit-IV state in device diagnostics.
+
 ## 0.6.2
 
 - Serialize complete GATT Proxy PDUs so simultaneous access messages and

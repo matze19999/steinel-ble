@@ -91,6 +91,12 @@ from .const import (
     OP_LIGHT_HSL_GET,
     OP_LIGHT_HSL_SET,
     OP_LIGHT_HSL_STATUS,
+    OP_LIGHT_LC_MODE_GET,
+    OP_LIGHT_LC_MODE_SET,
+    OP_LIGHT_LC_MODE_STATUS,
+    OP_LIGHT_LC_OCCUPANCY_GET,
+    OP_LIGHT_LC_OCCUPANCY_SET,
+    OP_LIGHT_LC_OCCUPANCY_STATUS,
     OP_LIGHT_LC_ONOFF_GET,
     OP_LIGHT_LC_ONOFF_SET,
     OP_LIGHT_LC_ONOFF_STATUS,
@@ -135,6 +141,9 @@ class SteinelCoordinator:
         restored = restore_light_states(entry.data.get(CONF_LIGHT_STATES))
         self.is_on, self.brightness, self.color_temperature, self.hs_color = restored
         self.sensor_values: dict[tuple[int, str], Any] = {}
+        self.lc_properties: dict[tuple[int, int], bytes] = {}
+        self.lc_modes: dict[tuple[int, bool], bool] = {}
+        self._lc_lock = asyncio.Lock()
         self._listeners: list[Callable[[], None]] = []
         self._connect_lock = asyncio.Lock()
         self._disconnect_event = asyncio.Event()
@@ -197,11 +206,17 @@ class SteinelCoordinator:
         return connected or self.advertisement_available
 
     def supports_sensor_lighting(self, address: int) -> bool:
-        """Return whether an element has motion and ambient-light sensing."""
-        properties = set(
-            self.entry.data.get(CONF_SENSOR_PROPERTIES, {}).get(str(address), [])
+        """Find an LC controller with occupancy sensing anywhere on its node."""
+        if not any(
+            element.address == address and MODEL_LIGHT_LC_SERVER in element.sig_models
+            for element in self.elements
+        ):
+            return False
+        detected = self.entry.data.get(CONF_SENSOR_PROPERTIES, {})
+        return any(
+            {"motion", "presence"}.intersection(detected.get(str(element.address), []))
+            for element in self.elements
         )
-        return {"motion", "illuminance"}.issubset(properties)
 
     async def async_setup(self) -> None:
         """Provision when needed, then connect and configure the node."""
@@ -774,27 +789,81 @@ class SteinelCoordinator:
 
     async def async_get_lc_property(self, address: int, property_id: int) -> bytes:
         """Read a standard Light LC property."""
-        node = await self.async_ensure_connected()
-        _src, parameters = await node.request(
+        parameters = await self._async_lc_request(
             address,
             OP_LIGHT_LC_PROPERTY_GET,
             property_id.to_bytes(2, "little"),
             OP_LIGHT_LC_PROPERTY_STATUS,
         )
-        return strip_property_prefix(property_id, parameters)
+        return self._store_lc_property(address, property_id, parameters)
 
     async def async_set_lc_property(
         self, address: int, property_id: int, value: bytes
-    ) -> None:
+    ) -> bytes:
         """Set a standard Light LC property and wait for confirmation."""
-        node = await self.async_ensure_connected()
-        await node.request(
+        parameters = await self._async_lc_request(
             address,
             OP_LIGHT_LC_PROPERTY_SET,
             property_id.to_bytes(2, "little") + value,
             OP_LIGHT_LC_PROPERTY_STATUS,
         )
-        self._arm_idle_disconnect()
+        return self._store_lc_property(address, property_id, parameters)
+
+    def _store_lc_property(
+        self, address: int, property_id: int, parameters: bytes
+    ) -> bytes:
+        if (
+            len(parameters) < 2
+            or int.from_bytes(parameters[:2], "little") != property_id
+        ):
+            raise HomeAssistantError("Unexpected Light LC property response")
+        value = parameters[2:]
+        self.lc_properties[(address, property_id)] = value
+        self._notify()
+        return value
+
+    async def _async_lc_request(
+        self, address: int, opcode: int, parameters: bytes, response: int
+    ) -> bytes:
+        # Property Status has no transaction ID: concurrent property requests
+        # to one controller must not consume each other's status replies.
+        async with self._lc_lock:
+            try:
+                node = await self.async_ensure_connected()
+                _src, data = await node.request(address, opcode, parameters, response)
+                return data
+            except (TimeoutError, BleakError, ConnectionError) as err:
+                raise self._command_error(err, address) from err
+            finally:
+                self._arm_idle_disconnect()
+
+    async def async_get_lc_mode(self, address: int, occupancy: bool) -> bool:
+        data = await self._async_lc_request(
+            address,
+            OP_LIGHT_LC_OCCUPANCY_GET if occupancy else OP_LIGHT_LC_MODE_GET,
+            b"",
+            OP_LIGHT_LC_OCCUPANCY_STATUS if occupancy else OP_LIGHT_LC_MODE_STATUS,
+        )
+        return self._store_lc_mode(address, occupancy, data)
+
+    async def async_set_lc_mode(
+        self, address: int, occupancy: bool, state: bool
+    ) -> bool:
+        data = await self._async_lc_request(
+            address,
+            OP_LIGHT_LC_OCCUPANCY_SET if occupancy else OP_LIGHT_LC_MODE_SET,
+            bytes([int(state)]),
+            OP_LIGHT_LC_OCCUPANCY_STATUS if occupancy else OP_LIGHT_LC_MODE_STATUS,
+        )
+        return self._store_lc_mode(address, occupancy, data)
+
+    def _store_lc_mode(self, address: int, occupancy: bool, data: bytes) -> bool:
+        if len(data) != 1 or data[0] not in (0, 1):
+            raise HomeAssistantError("Invalid Light LC mode response")
+        value = bool(data[0])
+        self.lc_modes[(address, occupancy)] = value
+        self._notify()
+        return value
 
     async def async_ensure_connected(self) -> MeshNode:
         """Reconnect the proxy before a command if necessary."""
@@ -1057,6 +1126,17 @@ class SteinelCoordinator:
 
     @callback
     def _access_received(self, src: int, opcode: int, parameters: bytes) -> None:
+        if opcode == OP_LIGHT_LC_PROPERTY_STATUS and len(parameters) >= 2:
+            property_id = int.from_bytes(parameters[:2], "little")
+            self.lc_properties[(src, property_id)] = parameters[2:]
+        elif (
+            opcode in (OP_LIGHT_LC_MODE_STATUS, OP_LIGHT_LC_OCCUPANCY_STATUS)
+            and len(parameters) == 1
+            and parameters[0] in (0, 1)
+        ):
+            self.lc_modes[(src, opcode == OP_LIGHT_LC_OCCUPANCY_STATUS)] = bool(
+                parameters[0]
+            )
         if opcode >= 0xC00000 and opcode & 0xFFFF == 0x6305:
             self._sensor_extension_received(src, opcode, parameters)
         if opcode in (OP_GENERIC_ONOFF_STATUS, OP_LIGHT_LC_ONOFF_STATUS) and parameters:

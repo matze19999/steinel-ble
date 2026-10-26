@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.7.0
+
+- Expose the existing Light LC settings when the controller and occupancy
+  sensors are on different elements of the same lamp, as on the L40 SC.
+  Motion or presence detection is sufficient; a separate lux reading is not
+  required. Plain lamps without detected occupancy sensing remain excluded.
+- Add localized configuration entities for main/basic brightness and duration,
+  the light threshold, automatic light control and motion automation. Property
+  controls require a bound LC Setup Server; setup only reads existing settings.
+- Serialize configuration requests and validate the echoed Property ID so
+  concurrent initialization cannot assign one property's reply to another.
+- Decode full-scale lightness as 100%, retain acknowledged values after edits,
+  and update configuration entities from live status messages and connectivity.
+- Include received LC properties and modes in device diagnostics.
+
 ## 0.6.3
 
 - Synchronize imported Mesh IV state from authenticated Secure Network and

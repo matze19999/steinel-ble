@@ -70,6 +70,14 @@ async def async_get_config_entry_diagnostics(
                 f"{address:04x}_{name}": value.value
                 for (address, name), value in coordinator.sensor_values.items()
             },
+            "lc_properties": {
+                f"{address:04x}_{property_id:04x}": value.hex()
+                for (address, property_id), value in coordinator.lc_properties.items()
+            },
+            "lc_modes": {
+                f"{address:04x}_{'occupancy' if occupancy else 'automatic'}": value
+                for (address, occupancy), value in coordinator.lc_modes.items()
+            },
             "elements": coordinator._serialize_elements(coordinator.elements),
         },
         "bluetooth": {

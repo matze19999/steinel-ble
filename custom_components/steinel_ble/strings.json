@@ -83,6 +83,17 @@
     "light": {
       "light": {"name": "Light"},
       "light_control": {"name": "Light control (0x{address})"}
+    },
+    "number": {
+      "main_light": {"name": "Main light brightness"},
+      "basic_light": {"name": "Basic light brightness"},
+      "main_light_time": {"name": "Main light duration"},
+      "basic_light_time": {"name": "Basic light duration"},
+      "light_threshold": {"name": "Light threshold"}
+    },
+    "switch": {
+      "automatic_light_control": {"name": "Automatic light control"},
+      "occupancy_automation": {"name": "Motion automation"}
     }
   }
 }

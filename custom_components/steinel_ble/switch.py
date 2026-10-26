@@ -3,19 +3,13 @@
 from __future__ import annotations
 
 from homeassistant.components.switch import SwitchEntity
+from homeassistant.core import callback
+from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import entity_registry as er
+from homeassistant.helpers.entity import EntityCategory
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
 from . import SteinelConfigEntry
-from .const import (
-    MODEL_LIGHT_LC_SERVER,
-    OP_LIGHT_LC_MODE_GET,
-    OP_LIGHT_LC_MODE_SET,
-    OP_LIGHT_LC_MODE_STATUS,
-    OP_LIGHT_LC_OCCUPANCY_GET,
-    OP_LIGHT_LC_OCCUPANCY_SET,
-    OP_LIGHT_LC_OCCUPANCY_STATUS,
-)
 
 
 async def async_setup_entry(
@@ -37,8 +31,7 @@ async def async_setup_entry(
     async_add_entities(
         SteinelLCSwitch(coordinator, element.address, occupancy)
         for element in coordinator.elements
-        if MODEL_LIGHT_LC_SERVER in element.sig_models
-        and coordinator.supports_sensor_lighting(element.address)
+        if coordinator.supports_sensor_lighting(element.address)
         for occupancy in (False, True)
     )
 
@@ -48,42 +41,48 @@ class SteinelLCSwitch(SwitchEntity):
 
     _attr_has_entity_name = True
     _attr_should_poll = False
+    _attr_entity_category = EntityCategory.CONFIG
+    _attr_available = True
 
     def __init__(self, coordinator, address: int, occupancy: bool) -> None:
         self.coordinator = coordinator
         self.address = address
         self.occupancy = occupancy
         key = "occupancy_automation" if occupancy else "automatic_light_control"
-        self._attr_name = (
-            "Motion automation" if occupancy else "Automatic light control"
-        )
+        self._attr_translation_key = key
         self._attr_unique_id = f"{coordinator.address}_{address:04x}_{key}"
         self._attr_device_info = coordinator.device_info
 
     async def async_added_to_hass(self) -> None:
+        self.async_on_remove(
+            self.coordinator.async_add_listener(self._handle_coordinator_update)
+        )
         try:
-            node = await self.coordinator.async_ensure_connected()
-            _src, value = await node.request(
-                self.address,
-                OP_LIGHT_LC_OCCUPANCY_GET if self.occupancy else OP_LIGHT_LC_MODE_GET,
-                b"",
-                OP_LIGHT_LC_OCCUPANCY_STATUS
-                if self.occupancy
-                else OP_LIGHT_LC_MODE_STATUS,
+            self._attr_is_on = await self.coordinator.async_get_lc_mode(
+                self.address, self.occupancy
             )
-            self._attr_is_on = bool(value[0])
-        except Exception:
+            self._attr_available = True
+        except HomeAssistantError:
             self._attr_available = False
 
+    @property
+    def available(self) -> bool:
+        return self.coordinator.available and self._attr_available
+
+    @callback
+    def _handle_coordinator_update(self) -> None:
+        value = self.coordinator.lc_modes.get((self.address, self.occupancy))
+        if value is not None:
+            self._attr_is_on = value
+            self._attr_available = True
+        self.async_write_ha_state()
+
     async def _async_set(self, state: bool) -> None:
-        node = await self.coordinator.async_ensure_connected()
-        await node.request(
-            self.address,
-            OP_LIGHT_LC_OCCUPANCY_SET if self.occupancy else OP_LIGHT_LC_MODE_SET,
-            bytes((state,)),
-            OP_LIGHT_LC_OCCUPANCY_STATUS if self.occupancy else OP_LIGHT_LC_MODE_STATUS,
+        self._attr_is_on = await self.coordinator.async_set_lc_mode(
+            self.address, self.occupancy, state
         )
-        self._attr_is_on = state
+        self._attr_available = True
+        self.async_write_ha_state()
 
     async def async_turn_on(self, **kwargs) -> None:
         await self._async_set(True)

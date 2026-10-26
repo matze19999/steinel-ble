@@ -62,6 +62,8 @@ SDK. See [Legal](#legal).
   automatic light control, motion automation, main-light brightness and time,
   basic-light brightness and time, and the ambient-light threshold. This
   includes the corresponding functions used by products such as the L 810 SC.
+  Controller and sensor models may occupy different Mesh elements, as on the
+  L40 SC; a separate ambient-lux sensor entity is not required.
 - **Bluetooth proxy support** - connections use Home Assistant's Bluetooth
   stack and
   [`bleak-retry-connector`](https://github.com/Bluetooth-Devices/bleak-retry-connector),
@@ -208,6 +210,35 @@ process.
 
 ## Options and diagnostics
 
+### Lamp settings
+
+After updating and restarting Home Assistant, open the lamp under
+*Settings → Devices & services → STEINEL Connect Bluetooth Mesh* and expand
+its **Configuration** section. Compatible occupancy-sensing lamps expose:
+
+- main-light brightness and duration;
+- basic-light brightness and duration;
+- the Light LC light threshold;
+- automatic light control; and
+- motion automation.
+
+Sensor and controller addresses are matched across the same node. Values are
+read from the LC controller's own address, not from the sensor element.
+Property edits require both the LC Server and LC Setup Server to be bound to
+the selected AppKey. The two mode switches only require the LC Server.
+Models and bindings imported from the App remain unchanged, and setup does not
+turn automation on or overwrite existing settings. Edits are displayed only
+after receiving a valid status reply. An unsupported or unreadable property
+can remain unavailable without disabling the rest of the device.
+
+Existing entries do not need to be removed or reimported. If occupancy sensing
+was not previously detected, use the integration's *Configure → Rescan models
+and sensor properties* option once. Standard LC settings are exposed here;
+vendor-specific Eco/Nightmatic modes, detection range, scenes and schedules
+are not added by this version.
+
+### Connection options
+
 Open *Settings → Devices & services → STEINEL Connect Bluetooth Mesh*, select
 the device and choose *Configure* to adjust:
 
@@ -307,7 +338,7 @@ For a failed automatic reset, first verify that:
   not every STEINEL product and firmware version has been tested.
 - Sensor support depends on STEINEL's vendor Sensor Extension model. Entities
   for properties not implemented by a device remain unavailable.
-- Scene management, Light LC parameter configuration, firmware updates and
+- Scene management, additional vendor-specific settings, firmware updates and
   Bluetooth Mesh BLOB/DFU are not currently exposed.
 - A device without imported credentials is either
   provisioned as new or reset from its previous network during setup.

@@ -58,7 +58,7 @@
           "disconnect_when_idle": "BLE-Verbindung bei Inaktivität freigeben",
           "idle_disconnect_delay": "Leerlaufzeit bis zum Trennen (Sekunden)",
           "advertisement_timeout": "Zeitlimit für Erreichbarkeit per Advertising (Sekunden)",
-          "rescan_models": "Modelle und Sensoreigenschaften neu erkennen"
+          "rescan_models": "Modelle und Sensoreigenschaften beim Speichern einmalig neu erkennen"
         }
       }
     }

@@ -106,6 +106,8 @@ from .const import (
     OP_LIGHT_LIGHTNESS_GET,
     OP_LIGHT_LIGHTNESS_SET,
     OP_LIGHT_LIGHTNESS_STATUS,
+    OP_SENSOR_STATUS,
+    OP_STEINEL_SENSOR_DATA_STATUS,
     SENSOR_SCHEMA_VERSION,
     STEINEL_COMPANY_ID,
 )
@@ -115,8 +117,8 @@ from .mesh import ElementComposition, MeshNode
 from .provisioning import Provisioner, ProvisioningError
 from .sensor_protocol import (
     SENSOR_PROPERTIES,
+    decode_sensor_status,
     decode_sensor_value,
-    strip_property_prefix,
 )
 from .state_store import restore_light_states, serialize_light_states
 
@@ -1043,6 +1045,13 @@ class SteinelCoordinator:
         self, address: int, property_id: int, timeout: float | None = None
     ) -> bytes:
         """Read one property from a Steinel Sensor Extension server."""
+
+        def matches(parameters: bytes) -> bool:
+            try:
+                return property_id in decode_sensor_status(parameters)
+            except ValueError:
+                return False
+
         try:
             node = await self.async_ensure_connected()
             _src, _opcode, parameters = await node.request_vendor(
@@ -1051,8 +1060,10 @@ class SteinelCoordinator:
                 property_id.to_bytes(2, "little"),
                 timeout=timeout
                 or float(self._option(CONF_COMMAND_TIMEOUT, DEFAULT_COMMAND_TIMEOUT)),
+                response_opcode=OP_STEINEL_SENSOR_DATA_STATUS,
+                response_matcher=matches,
             )
-            return strip_property_prefix(property_id, parameters)
+            return decode_sensor_status(parameters)[property_id]
         finally:
             self._arm_idle_disconnect()
 
@@ -1089,6 +1100,12 @@ class SteinelCoordinator:
                 try:
                     raw = await self.async_get_sensor(int(address_text), property_id)
                 except Exception:
+                    _LOGGER.debug(
+                        "Sensor property 0x%04X read failed for element 0x%04X",
+                        property_id,
+                        int(address_text),
+                        exc_info=True,
+                    )
                     continue
                 value = decode_sensor_value(name, raw)
                 self.sensor_values[(int(address_text), name)] = value
@@ -1137,7 +1154,7 @@ class SteinelCoordinator:
             self.lc_modes[(src, opcode == OP_LIGHT_LC_OCCUPANCY_STATUS)] = bool(
                 parameters[0]
             )
-        if opcode >= 0xC00000 and opcode & 0xFFFF == 0x6305:
+        if opcode in (OP_SENSOR_STATUS, OP_STEINEL_SENSOR_DATA_STATUS):
             self._sensor_extension_received(src, opcode, parameters)
         if opcode in (OP_GENERIC_ONOFF_STATUS, OP_LIGHT_LC_ONOFF_STATUS) and parameters:
             self.is_on[src] = bool(parameters[0])
@@ -1164,17 +1181,22 @@ class SteinelCoordinator:
     def _sensor_extension_received(
         self, src: int, opcode: int, parameters: bytes
     ) -> None:
-        """Apply unsolicited Sensor Extension reports without polling."""
-        vendor_opcode = opcode >> 16
-        if vendor_opcode not in (0xD0, 0xD1, 0xDC) or len(parameters) < 3:
+        """Apply all properties in a SIG or STEINEL sensor data report."""
+        try:
+            values = decode_sensor_status(parameters)
+        except ValueError:
+            _LOGGER.debug(
+                "Malformed sensor status 0x%X from element 0x%04X: %s",
+                opcode,
+                src,
+                parameters.hex(),
+            )
             return
-        property_id = int.from_bytes(parameters[:2], "little")
         for name, known_id in SENSOR_PROPERTIES.items():
-            if property_id == known_id:
+            if known_id in values:
                 self.sensor_values[(src, name)] = decode_sensor_value(
-                    name, parameters[2:]
+                    name, values[known_id]
                 )
-                break
 
     @callback
     def async_add_listener(self, listener: Callable[[], None]) -> Callable[[], None]:

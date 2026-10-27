@@ -58,7 +58,7 @@
           "disconnect_when_idle": "Release the BLE connection when idle",
           "idle_disconnect_delay": "Idle time before disconnecting (seconds)",
           "advertisement_timeout": "Advertisement reachability timeout (seconds)",
-          "rescan_models": "Rescan models and sensor properties"
+          "rescan_models": "Rescan models and sensor properties once when saving"
         }
       }
     }

@@ -7,7 +7,7 @@ import logging
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 
-from .const import CONF_ADDRESS, PLATFORMS
+from .const import CONF_ADDRESS, CONF_ELEMENTS, PLATFORMS
 from .coordinator import SteinelCoordinator
 
 type SteinelConfigEntry = ConfigEntry[SteinelCoordinator]
@@ -34,9 +34,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: SteinelConfigEntry) -> b
 async def _async_update_listener(
     hass: HomeAssistant, entry: SteinelConfigEntry
 ) -> None:
-    """Reload the entry after its options change."""
+    """Reload after option changes or an explicit discovery-cache reset."""
     runtime_data = getattr(entry, "runtime_data", None)
-    if runtime_data and runtime_data.loaded_options == dict(entry.options):
+    if (
+        runtime_data
+        and runtime_data.loaded_options == dict(entry.options)
+        and CONF_ELEMENTS in entry.data
+    ):
         return
     await hass.config_entries.async_reload(entry.entry_id)
 

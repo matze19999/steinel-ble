@@ -36,6 +36,7 @@ from .const import (
     CONF_RESTORE_BRIGHTNESS,
     CONF_SENSOR_INTERVAL,
     CONF_SENSOR_PROPERTIES,
+    CONF_SENSOR_SCHEMA_VERSION,
     CONF_SOURCE_ADDRESS,
     CONF_STATIC_OOB,
     DEFAULT_ADVERTISEMENT_TIMEOUT,
@@ -357,6 +358,7 @@ class SteinelOptionsFlow(OptionsFlow):
                     CONF_ELEMENTS,
                     CONF_MODEL_SCHEMA_VERSION,
                     CONF_SENSOR_PROPERTIES,
+                    CONF_SENSOR_SCHEMA_VERSION,
                 ):
                     data.pop(key, None)
                 self.hass.config_entries.async_update_entry(

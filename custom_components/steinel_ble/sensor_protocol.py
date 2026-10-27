@@ -30,16 +30,47 @@ class SensorValue:
     raw: bytes
 
 
-def strip_property_prefix(property_id: int, data: bytes) -> bytes:
-    """Remove the echoed property ID used by STEINEL vendor responses."""
-    prefix = property_id.to_bytes(2, "little")
-    return data[2:] if data.startswith(prefix) else data
+def decode_sensor_status(data: bytes) -> dict[int, bytes]:
+    """Unpack Sensor (Extension) Data Status MPIDs and their raw values.
+
+    STEINEL's D1 status uses the same Format A/B headers as SIG Sensor Status,
+    rather than a plain property-ID prefix. Parse the entire message before
+    returning so a truncated trailing record cannot partially update a sensor.
+    """
+    values: dict[int, bytes] = {}
+    offset = 0
+    while offset < len(data):
+        first = data[offset]
+        header_size = 3 if first & 1 else 2
+        if len(data) - offset < header_size:
+            raise ValueError("Truncated sensor property header")
+        if first & 1:
+            length = first >> 1
+            length = 0 if length == 0x7F else length + 1
+            property_id = int.from_bytes(data[offset + 1 : offset + 3], "little")
+        else:
+            header = int.from_bytes(data[offset : offset + 2], "little")
+            length = ((header >> 1) & 0x0F) + 1
+            property_id = header >> 5
+        offset += header_size
+        end = offset + length
+        if end > len(data):
+            raise ValueError("Truncated sensor property value")
+        values[property_id] = data[offset:end]
+        offset = end
+    return values
 
 
 def decode_sensor_value(name: str, data: bytes) -> SensorValue:
     """Decode Bluetooth SIG Device Property characteristic encodings."""
-    if name in ("presence", "motion") and data:
-        return SensorValue(bool(data[0]), data)
+    if name == "motion":
+        # Motion Sensed is Percentage 8 (0..200 = 0..100%), not a Boolean.
+        # 0xFF means unknown; 201..254 are prohibited.
+        valid = len(data) == 1 and data[0] <= 200
+        return SensorValue(bool(data[0]) if valid else None, data)
+    if name == "presence":
+        valid = len(data) == 1 and data[0] in (0, 1)
+        return SensorValue(bool(data[0]) if valid else None, data)
     if name == "noise" and data:
         return SensorValue(data[0], data)
     if name == "illuminance" and len(data) >= 3:

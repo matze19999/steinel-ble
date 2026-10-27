@@ -143,7 +143,12 @@ class MeshNode:
         self._segments: dict[tuple[int, int, int], _InboundSegments] = {}
         self._segment_acks: dict[int, asyncio.Event] = {}
         self._vendor_requests: list[
-            tuple[int | None, asyncio.Future[tuple[int, int, bytes]]]
+            tuple[
+                int,
+                int | None,
+                Callable[[bytes], bool] | None,
+                asyncio.Future[tuple[int, int, bytes]],
+            ]
         ] = []
         self._send_lock = asyncio.Lock()
         self.rx_stats: Counter[str] = Counter()
@@ -369,8 +374,13 @@ class MeshNode:
         if self.access_received:
             self.access_received(src, opcode, parameters)
         if opcode >= 0xC00000 and opcode & 0xFFFF == 0x6305:
-            for source, future in tuple(self._vendor_requests):
-                if not future.done() and (source is None or source == src):
+            for source, expected, matches, future in tuple(self._vendor_requests):
+                if (
+                    not future.done()
+                    and source == src
+                    and (expected is None or opcode == expected)
+                    and (matches is None or matches(parameters))
+                ):
                     future.set_result((src, opcode, parameters))
                     break
 
@@ -488,12 +498,14 @@ class MeshNode:
         parameters: bytes = b"",
         *,
         timeout: float | None = None,
+        response_opcode: int | None = None,
+        response_matcher: Callable[[bytes], bool] | None = None,
     ) -> tuple[int, int, bytes]:
         """Send a Steinel vendor message and accept its authenticated reply."""
         future: asyncio.Future[tuple[int, int, bytes]] = (
             asyncio.get_running_loop().create_future()
         )
-        request = (dst, future)
+        request = (dst, response_opcode, response_matcher, future)
         self._vendor_requests.append(request)
         try:
             wire_opcode = int.from_bytes(

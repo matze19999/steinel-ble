@@ -168,6 +168,67 @@ def test_rescan_restores_bindings_without_adding_or_binding_keys(integration):
     )
 
 
+@pytest.mark.parametrize("schema_version", [2, 3])
+def test_sensor_parser_upgrade_repeats_detection_once(integration, schema_version):
+    coordinator = _coordinator(integration)
+    coordinator.entry.data["sensor_schema_version"] = schema_version
+    asyncio.run(coordinator.async_setup())
+    if schema_version < 3:
+        coordinator._async_detect_sensor_properties.assert_awaited_once()
+    else:
+        coordinator._async_detect_sensor_properties.assert_not_awaited()
+
+
+def test_one_time_rescan_removes_sensor_schema_and_keeps_imported_keys(integration):
+    flow = integration.flow.SteinelOptionsFlow()
+    data = {
+        **_entry_data(),
+        "elements": [],
+        "model_schema_version": 3,
+        "sensor_schema_version": 3,
+        "sensor_properties": {"12": ["motion"]},
+    }
+    flow.config_entry = types.SimpleNamespace(data=data)
+    update = Mock()
+    flow.hass = types.SimpleNamespace(
+        config_entries=types.SimpleNamespace(async_update_entry=update)
+    )
+    result = asyncio.run(flow.async_step_init({"rescan_models": True}))
+    new_data = update.call_args.kwargs["data"]
+    for key in (
+        "elements",
+        "model_schema_version",
+        "sensor_properties",
+        "sensor_schema_version",
+    ):
+        assert key not in new_data
+    for key in ("net_key", "app_key", "device_key", "imported_elements"):
+        assert new_data[key] == data[key]
+    assert result["data"] == {}  # The rescan is an action, not a stored switch.
+
+
+@pytest.mark.parametrize("rescan", [False, True])
+def test_rescan_reloads_with_unchanged_options(integration, rescan):
+    lifecycle = importlib.import_module(
+        f"{integration.coordinator.__package__}.__init__"
+    )
+    entry = types.SimpleNamespace(
+        entry_id="test",
+        data={} if rescan else {"elements": []},
+        options={},
+        runtime_data=types.SimpleNamespace(loaded_options={}),
+    )
+    reload_entry = AsyncMock()
+    hass = types.SimpleNamespace(
+        config_entries=types.SimpleNamespace(async_reload=reload_entry)
+    )
+    asyncio.run(lifecycle._async_update_listener(hass, entry))
+    if rescan:
+        reload_entry.assert_awaited_once_with("test")
+    else:
+        reload_entry.assert_not_awaited()
+
+
 def test_owned_mesh_still_configures_models(integration):
     coordinator = _coordinator(integration)
     coordinator.entry.data["existing_mesh"] = False

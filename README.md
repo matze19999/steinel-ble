@@ -58,6 +58,10 @@ SDK. See [Legal](#legal).
   Unsupported properties remain unavailable. All properties of a device are
   refreshed by one shared polling cycle so they do not establish competing BLE
   sessions; light commands take priority over background polling.
+  Sensor data uses the packed Format A/B property headers used by STEINEL's
+  app. Both polling replies and live reports update motion, including the
+  transition back to clear. Unknown or invalid motion/presence values are
+  unavailable rather than being reported as detected.
 - **Light LC configuration** - compatible sensor lights expose controls for
   automatic light control, motion automation, main-light brightness and time,
   basic-light brightness and time, and the ambient-light threshold. This
@@ -260,9 +264,17 @@ approximately 12 seconds. The actual delay depends on signal quality, proxy
 load and the STEINEL device. Unexpected connection losses are handled in the
 background with exponential backoff.
 
+The rescan option is a one-time action when saving: it clears the model and
+sensor discovery cache and reloads the device, even if no other option changed.
+It returns to off afterward. Updating from versions before 0.7.1 automatically
+repeats sensor discovery once with the corrected sensor parser; no reset or
+reimport is needed.
+
 Home Assistant's device diagnostics download includes model composition,
 detected sensor properties, active and passive reachability, last
 advertisement, connection state, reconnect count, Bluetooth source and RSSI.
+`sensor_raw_values` includes the decoded properties' raw value bytes (without
+their packed headers), alongside `sensor_values`.
 NetKey, AppKey, Device Key and Static OOB values are always redacted.
 
 A lamp can expose both a physical light element and a separate Light LC

@@ -91,7 +91,21 @@
       "basic_light_time": {"name": "Basic light duration"},
       "fade_on_time": {"name": "Main light fade-on time"},
       "occupancy_delay": {"name": "Motion response delay"},
+      "motion_range_1": {"name": "Motion range zone 1"},
+      "motion_range_2": {"name": "Motion range zone 2"},
+      "motion_sensitivity": {"name": "Motion sensitivity (0–4)"},
       "light_threshold": {"name": "Light threshold"}
+    },
+    "select": {
+      "operating_profile": {
+        "name": "Operating mode",
+        "state": {
+          "automatic": "Fully automatic",
+          "semi_automatic": "Semi-automatic",
+          "switch": "Switch mode",
+          "nightmatic": "Nightmatic"
+        }
+      }
     },
     "switch": {
       "automatic_light_control": {"name": "Automatic light control"},

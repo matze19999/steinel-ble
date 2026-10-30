@@ -141,7 +141,12 @@ class MeshNode:
         self.src = 0x0001
         self._tid = 0
         self._requests: list[
-            tuple[int, int | None, asyncio.Future[tuple[int, bytes]]]
+            tuple[
+                int,
+                int | None,
+                Callable[[bytes], bool] | None,
+                asyncio.Future[tuple[int, bytes]],
+            ]
         ] = []
         self._segments: dict[tuple[int, int, int], _InboundSegments] = {}
         self._segment_acks: dict[int, asyncio.Event] = {}
@@ -166,6 +171,11 @@ class MeshNode:
         if self._sequence_allocator is None:
             return self._take_sequence()
         value = await self._sequence_allocator()
+        if type(value) is not int or not 0 <= value <= 0xFFFFFE:
+            raise RuntimeError(
+                "Invalid or exhausted Bluetooth Mesh sequence allocation"
+            )
+        self._iv_sync_open = False
         self.sequence = value + 1
         self.sequence_changed(self.sequence)
         return value
@@ -374,11 +384,12 @@ class MeshNode:
             self.rx_stats["access_invalid"] += 1
             return
         self.rx_stats["access_authenticated"] += 1
-        for expected, source, future in tuple(self._requests):
+        for expected, source, matches, future in tuple(self._requests):
             if (
                 not future.done()
                 and opcode == expected
                 and (source is None or source == src)
+                and (matches is None or matches(parameters))
             ):
                 future.set_result((src, parameters))
                 break
@@ -487,12 +498,13 @@ class MeshNode:
         *,
         device_key: bool = False,
         timeout: float | None = None,
+        response_matcher: Callable[[bytes], bool] | None = None,
     ) -> tuple[int, bytes]:
         """Send access data and wait for its acknowledged response."""
         future: asyncio.Future[tuple[int, bytes]] = (
             asyncio.get_running_loop().create_future()
         )
-        request = (response_opcode, dst, future)
+        request = (response_opcode, dst, response_matcher, future)
         self._requests.append(request)
         try:
             await self.send_access(dst, opcode, parameters, device_key=device_key)

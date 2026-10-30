@@ -148,11 +148,14 @@ class SteinelCoordinator:
         self.sensor_values: dict[tuple[int, str], Any] = {}
         self.lc_properties: dict[tuple[int, int], bytes] = {}
         self.lc_modes: dict[tuple[int, bool], bool] = {}
+        self.sensor_settings: dict[tuple[int, int], bytes] = {}
+        self.l810_profile: int | None = None
         self._lc_lock = asyncio.Lock()
         self._listeners: list[Callable[[], None]] = []
         self._sensor_request_lock = asyncio.Lock()
-        self._motion_task = None
-        self._sequence_store = None
+        self._motion_task: asyncio.Task[None] | None = None
+        self._l810_forwarded_motion: bytes | None = None
+        self._sequence_store: SequenceStore | None = None
         if str(entry.data.get(CONF_PRODUCT_ID)) == "7801":
             self._sequence_store = SequenceStore(
                 hass, entry.entry_id, entry.data.get(CONF_SEQUENCE, 0)
@@ -372,7 +375,8 @@ class SteinelCoordinator:
             self._update_entry(updates)
         if self._advertisement_task:
             self._advertisement_task.cancel()
-        self._advertisement_task = self.hass.async_create_background_task(
+        self._advertisement_task = self.entry.async_create_background_task(
+            self.hass,
             self._async_expire_advertisement(),
             f"steinel_ble advertisement timeout {self.address}",
         )
@@ -404,7 +408,8 @@ class SteinelCoordinator:
     def _start_reconnect_monitor(self) -> None:
         if self._reconnect_task is None or self._reconnect_task.done():
             self._shutting_down = False
-            self._reconnect_task = self.hass.async_create_background_task(
+            self._reconnect_task = self.entry.async_create_background_task(
+                self.hass,
                 self._async_reconnect_monitor(),
                 f"steinel_ble reconnect {self.address}",
             )
@@ -443,7 +448,8 @@ class SteinelCoordinator:
         self._cancel_idle_disconnect()
         if not self._option(CONF_DISCONNECT_WHEN_IDLE, DEFAULT_DISCONNECT_WHEN_IDLE):
             return
-        self._idle_task = self.hass.async_create_background_task(
+        self._idle_task = self.entry.async_create_background_task(
+            self.hass,
             self._async_idle_disconnect(),
             f"steinel_ble idle disconnect {self.address}",
         )
@@ -803,7 +809,7 @@ class SteinelCoordinator:
             )
             try:
                 _src, status = await self.node.request(
-                    primary, 32829, bind, 32830, device_key=True, timeout=2
+                    primary, 0x803D, bind, 0x803E, device_key=True, timeout=2
                 )
             except Exception:
                 _LOGGER.debug(
@@ -1147,6 +1153,7 @@ class SteinelCoordinator:
                         or float(
                             self._option(CONF_COMMAND_TIMEOUT, DEFAULT_COMMAND_TIMEOUT)
                         ),
+                        response_matcher=matches,
                     )
                 values = decode_sensor_status(parameters)
                 if property_id not in values:
@@ -1191,9 +1198,12 @@ class SteinelCoordinator:
             raise ValueError("Unexpected STEINEL sensor setting response")
         if len(parameters) < 5 or not parameters.startswith(prefix):
             raise ValueError("Malformed STEINEL sensor setting response")
-        if parameters[4] != 3:
-            raise ValueError("STEINEL sensor setting is not writable")
-        return parameters[5:]
+        if parameters[4] not in (1, 3) or (opcode == 0xD5 and parameters[4] != 3):
+            raise ValueError("STEINEL sensor setting access denied")
+        raw = parameters[5:]
+        self.sensor_settings[(address, setting_id)] = raw
+        self._notify()
+        return raw
 
     async def async_get_sensor_setting(self, address: int, setting_id: int) -> bytes:
         """Read an L 810 sensor setting."""
@@ -1201,8 +1211,10 @@ class SteinelCoordinator:
             node = await self.async_ensure_connected()
             async with self._sensor_request_lock:
                 return await self._async_sensor_setting_request(
-                    node, address, 212, setting_id
+                    node, address, 0xD4, setting_id
                 )
+        except (TimeoutError, BleakError, ConnectionError) as err:
+            raise self._command_error(err, address) from err
         finally:
             self._arm_idle_disconnect()
 
@@ -1214,8 +1226,10 @@ class SteinelCoordinator:
             node = await self.async_ensure_connected()
             async with self._sensor_request_lock:
                 return await self._async_sensor_setting_request(
-                    node, address, 213, setting_id, value
+                    node, address, 0xD5, setting_id, value
                 )
+        except (TimeoutError, BleakError, ConnectionError) as err:
+            raise self._command_error(err, address) from err
         finally:
             self._arm_idle_disconnect()
 
@@ -1223,18 +1237,24 @@ class SteinelCoordinator:
         self, address: int, range_index: int, percentage: float
     ) -> bytes:
         """Change one L 810 range while preserving the other range."""
+        if range_index not in (0, 1) or not 0 <= percentage <= 100:
+            raise ValueError("STEINEL range value outside the supported range")
         try:
             node = await self.async_ensure_connected()
             async with self._sensor_request_lock:
                 current = bytearray(
-                    await self._async_sensor_setting_request(node, address, 212, 65525)
+                    await self._async_sensor_setting_request(
+                        node, address, 0xD4, 0xFFF5
+                    )
                 )
                 if len(current) != 4 or range_index not in (0, 1):
                     raise ValueError("Malformed STEINEL range setting")
                 current[0 if range_index == 0 else 3] = round(percentage * 2)
                 return await self._async_sensor_setting_request(
-                    node, address, 213, 65525, bytes(current)
+                    node, address, 0xD5, 0xFFF5, bytes(current)
                 )
+        except (TimeoutError, BleakError, ConnectionError) as err:
+            raise self._command_error(err, address) from err
         finally:
             self._arm_idle_disconnect()
 
@@ -1243,7 +1263,7 @@ class SteinelCoordinator:
         try:
             node = await self.async_ensure_connected()
             controller = self.entry.data[CONF_UNICAST_ADDRESS] + 1
-            async with self._lc_request_lock:
+            async with self._lc_lock:
                 src, opcode, parameters = await node.request_vendor(
                     controller,
                     0xC4,
@@ -1257,7 +1277,13 @@ class SteinelCoordinator:
                 raise ValueError("Unexpected STEINEL profile response")
             if len(parameters) != 4 or not parameters.startswith(b"\x1f\x00"):
                 raise ValueError("Malformed STEINEL profile response")
-            return int.from_bytes(parameters[2:4], "little")
+            self.l810_profile = int.from_bytes(parameters[2:4], "little")
+            self._notify()
+            return self.l810_profile
+        except (TimeoutError, BleakError, ConnectionError) as err:
+            raise self._command_error(
+                err, self.entry.data[CONF_UNICAST_ADDRESS] + 1
+            ) from err
         finally:
             self._arm_idle_disconnect()
 
@@ -1270,24 +1296,55 @@ class SteinelCoordinator:
             primary = self.entry.data[CONF_UNICAST_ADDRESS]
             controller = primary + 1
             scene = profile.to_bytes(2, "little")
-            async with self._lc_request_lock:
-                await node.send_access(
-                    primary, 0x8242, scene + bytes((node.next_tid(),))
+            async with self._lc_lock:
+                _, scene_status = await node.request(
+                    primary, 0x8242, scene + bytes((node.next_tid(),)), 0x5E
                 )
-                await node.send_access(controller, 0xC56305, b"\x1f\x00" + scene)
+                if (
+                    len(scene_status) < 3
+                    or scene_status[0] != 0
+                    or (
+                        scene_status[1:3] != scene
+                        and (len(scene_status) < 6 or scene_status[3:5] != scene)
+                    )
+                ):
+                    raise ValueError("STEINEL operating scene was not acknowledged")
+                _, _, parameters = await node.request_vendor(
+                    controller,
+                    0xC5,
+                    b"\x1f\x00" + scene,
+                    response_opcode=0xC76305,
+                    response_matcher=lambda parameters: parameters.startswith(
+                        b"\x1f\x00"
+                    ),
+                )
+                if parameters != b"\x1f\x00" + scene:
+                    raise ValueError("STEINEL operating profile was not acknowledged")
                 if profile == 3:
-                    await node.request(
+                    _, status = await node.request(
                         controller,
                         OP_LIGHT_LC_MODE_SET,
                         b"\x01",
                         OP_LIGHT_LC_MODE_STATUS,
                     )
-                    await node.request(
+                    if not self._store_lc_mode(controller, False, status):
+                        raise ValueError(
+                            "STEINEL automatic light control was not enabled"
+                        )
+                    _, status = await node.request(
                         controller,
                         OP_LIGHT_LC_OCCUPANCY_SET,
                         b"\x01",
                         OP_LIGHT_LC_OCCUPANCY_STATUS,
                     )
+                    if not self._store_lc_mode(controller, True, status):
+                        raise ValueError("STEINEL motion automation was not enabled")
+                self.l810_profile = profile
+                self._notify()
+        except (TimeoutError, BleakError, ConnectionError) as err:
+            raise self._command_error(
+                err, self.entry.data[CONF_UNICAST_ADDRESS] + 1
+            ) from err
         finally:
             self._arm_idle_disconnect()
 
@@ -1297,20 +1354,19 @@ class SteinelCoordinator:
         address = self.entry.data[CONF_UNICAST_ADDRESS] + 2
         while not self._shutting_down:
             if not self._light_commands:
-                previous = self.sensor_values.get((address, "motion"))
-                previous_value = previous.value if previous is not None else None
                 try:
                     raw = await self.async_get_sensor(
                         address, SENSOR_PROPERTIES["motion"], timeout=2
                     )
                 except Exception:
-                    pass
+                    _LOGGER.debug("L 810 motion polling failed", exc_info=True)
                 else:
                     value = decode_sensor_value("motion", raw)
                     self.sensor_values[address, "motion"] = value
-                    if value.value is not None and value.value != previous_value:
+                    if value.value is not None and raw != self._l810_forwarded_motion:
                         try:
                             await self._async_forward_l810_motion(raw)
+                            self._l810_forwarded_motion = raw
                         except Exception:
                             _LOGGER.debug(
                                 "Forwarding L 810 motion to LC failed", exc_info=True
@@ -1321,7 +1377,7 @@ class SteinelCoordinator:
 
     async def _async_forward_l810_motion(self, raw: bytes) -> None:
         """Forward the L 810 sensor state to its separate Light LC element."""
-        if not raw:
+        if decode_sensor_value("motion", raw).value is None:
             return
         node = await self.async_ensure_connected()
         controller = self.entry.data[CONF_UNICAST_ADDRESS] + 1
@@ -1341,17 +1397,11 @@ class SteinelCoordinator:
         """Start one polling loop for all properties of this node."""
         properties = self.entry.data.get(CONF_SENSOR_PROPERTIES, {})
         if properties and (self._sensor_task is None or self._sensor_task.done()):
-            if str(self.entry.data.get(CONF_PRODUCT_ID)) == "7801":
-                self._sensor_task = self.entry.async_create_background_task(
-                    self.hass,
-                    self._async_sensor_poll_loop(),
-                    f"steinel_ble sensor polling {self.address}",
-                )
-            else:
-                self._sensor_task = self.hass.async_create_background_task(
-                    self._async_sensor_poll_loop(),
-                    f"steinel_ble sensor polling {self.address}",
-                )
+            self._sensor_task = self.entry.async_create_background_task(
+                self.hass,
+                self._async_sensor_poll_loop(),
+                f"steinel_ble sensor polling {self.address}",
+            )
 
         if (
             str(self.entry.data.get(CONF_PRODUCT_ID)) == "7801"
@@ -1385,20 +1435,23 @@ class SteinelCoordinator:
                 property_id = SENSOR_PROPERTIES.get(name)
                 if property_id is None:
                     continue
-                previous = self.sensor_values.get((int(address_text), name))
+                # The dedicated L 810 loop owns motion reads and forwarding.
+                if (
+                    str(self.entry.data.get(CONF_PRODUCT_ID)) == "7801"
+                    and name == "motion"
+                ):
+                    continue
                 try:
                     raw = await self.async_get_sensor(int(address_text), property_id)
                 except Exception:
+                    _LOGGER.debug(
+                        "Sensor property 0x%04X read failed for element 0x%04X",
+                        property_id,
+                        int(address_text),
+                        exc_info=True,
+                    )
                     continue
                 value = decode_sensor_value(name, raw)
-                if (
-                    str(self.entry.data.get(CONF_PRODUCT_ID)) == "7801"
-                    and value.value is None
-                    and previous is not None
-                    and (previous.value is not None)
-                ):
-                    self.sensor_values[int(address_text), name] = previous
-                    continue
                 self.sensor_values[int(address_text), name] = value
                 if (
                     name == "illuminance"
@@ -1424,7 +1477,8 @@ class SteinelCoordinator:
             return
         if self._state_task:
             self._state_task.cancel()
-        self._state_task = self.hass.async_create_background_task(
+        self._state_task = self.entry.async_create_background_task(
+            self.hass,
             self._async_persist_light_states(),
             f"steinel_ble persist state {self.address}",
         )
@@ -1460,6 +1514,13 @@ class SteinelCoordinator:
             )
         if opcode in (OP_SENSOR_STATUS, OP_STEINEL_SENSOR_DATA_STATUS):
             self._sensor_extension_received(src, opcode, parameters)
+        if (
+            opcode == 0xC76305
+            and src == self.entry.data[CONF_UNICAST_ADDRESS] + 1
+            and len(parameters) == 4
+            and parameters[:2] == b"\x1f\x00"
+        ):
+            self.l810_profile = int.from_bytes(parameters[2:], "little")
         if opcode in (OP_GENERIC_ONOFF_STATUS, OP_LIGHT_LC_ONOFF_STATUS) and parameters:
             self.is_on[src] = bool(parameters[0])
         elif opcode == OP_LIGHT_LIGHTNESS_STATUS and len(parameters) >= 2:

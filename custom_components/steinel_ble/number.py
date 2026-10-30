@@ -14,7 +14,14 @@ from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 from homeassistant.helpers.restore_state import RestoreEntity
 
 from . import SteinelConfigEntry
-from .const import CONF_PRODUCT_ID, CONF_UNICAST_ADDRESS, MODEL_LIGHT_LC_SETUP_SERVER
+from .const import (
+    CONF_EXISTING_MESH,
+    CONF_PRODUCT_ID,
+    CONF_UNICAST_ADDRESS,
+    MODEL_LIGHT_LC_SETUP_SERVER,
+    MODEL_STEINEL_SENSOR_EXTENSION,
+    STEINEL_COMPANY_ID,
+)
 
 
 @dataclass(frozen=True)
@@ -145,10 +152,16 @@ async def async_setup_entry(
 
     if str(entry.data.get(CONF_PRODUCT_ID)) == "7801":
         sensor_address = entry.data[CONF_UNICAST_ADDRESS] + 2
-        entities.extend(
-            SteinelSensorSettingNumber(coordinator, sensor_address, description)
-            for description in SENSOR_SETTING_DESCRIPTIONS
-        )
+        if any(
+            element.address == sensor_address
+            and (STEINEL_COMPANY_ID, MODEL_STEINEL_SENSOR_EXTENSION)
+            in element.vendor_models
+            for element in coordinator.elements
+        ):
+            entities.extend(
+                SteinelSensorSettingNumber(coordinator, sensor_address, description)
+                for description in SENSOR_SETTING_DESCRIPTIONS
+            )
     async_add_entities(entities)
 
 
@@ -187,8 +200,9 @@ class SteinelLCNumber(NumberEntity, RestoreEntity):
             )
             if (
                 str(self.coordinator.entry.data.get(CONF_PRODUCT_ID)) == "7801"
+                and not self.coordinator.entry.data.get(CONF_EXISTING_MESH)
                 and self.description.property_id == 0x002B
-                and self._decode(raw) == 65535
+                and raw == (6553500).to_bytes(3, "little")
                 and previous is not None
             ):
                 try:
@@ -239,6 +253,11 @@ class SteinelLCNumber(NumberEntity, RestoreEntity):
         if value == 0xFFFFFF:
             return None
         if self.description.kind == "lux":
+            if (
+                str(self.coordinator.entry.data.get(CONF_PRODUCT_ID)) == "7801"
+                and value == 6553500
+            ):
+                return None
             return value * 0.01
         return value / 1000
 
@@ -266,6 +285,8 @@ class SteinelSensorSettingNumber(NumberEntity):
     _attr_has_entity_name = True
     _attr_should_poll = False
     _attr_mode = NumberMode.SLIDER
+    _attr_entity_category = EntityCategory.CONFIG
+    _attr_available = False
 
     def __init__(
         self, coordinator, address: int, description: SensorSettingDescription
@@ -273,7 +294,7 @@ class SteinelSensorSettingNumber(NumberEntity):
         self.coordinator = coordinator
         self.address = address
         self.description = description
-        self._attr_name = description.name
+        self._attr_translation_key = description.key
         self._attr_unique_id = f"{coordinator.address}_{address:04x}_{description.key}"
         self._attr_device_info = coordinator.device_info
         self._attr_native_min_value = description.minimum
@@ -282,31 +303,63 @@ class SteinelSensorSettingNumber(NumberEntity):
         self._attr_native_unit_of_measurement = description.unit
 
     async def async_added_to_hass(self) -> None:
+        self.async_on_remove(
+            self.coordinator.async_add_listener(self._handle_coordinator_update)
+        )
         try:
             raw = await self.coordinator.async_get_sensor_setting(
                 self.address, self.description.setting_id
             )
-            if self.description.range_index is None:
-                if len(raw) != 1 or raw[0] > 4:
-                    raise ValueError("Malformed STEINEL sensitivity setting")
-                self._attr_native_value = raw[0]
-            else:
-                if len(raw) != 4:
-                    raise ValueError("Malformed STEINEL range setting")
-                offset = 0 if self.description.range_index == 0 else 3
-                self._attr_native_value = raw[offset] / 2
-        except Exception:
+            self._apply_value(raw)
+        except (HomeAssistantError, ValueError, TimeoutError, ConnectionError):
             self._attr_available = False
 
-    async def async_set_native_value(self, value: float) -> None:
+    @property
+    def available(self) -> bool:
+        return self.coordinator.available and self._attr_available
+
+    @callback
+    def _handle_coordinator_update(self) -> None:
+        raw = self.coordinator.sensor_settings.get(
+            (self.address, self.description.setting_id)
+        )
+        if raw is not None:
+            try:
+                self._apply_value(raw)
+            except ValueError:
+                self._attr_available = False
+        self.async_write_ha_state()
+
+    def _apply_value(self, raw: bytes) -> None:
         if self.description.range_index is None:
-            await self.coordinator.async_set_sensor_setting(
-                self.address,
-                self.description.setting_id,
-                bytes((round(value),)),
-            )
+            if len(raw) != 1 or raw[0] > 4:
+                raise ValueError("Malformed STEINEL sensitivity setting")
+            value = raw[0]
         else:
-            await self.coordinator.async_set_sensor_range(
-                self.address, self.description.range_index, value
-            )
+            if len(raw) != 4:
+                raise ValueError("Malformed STEINEL range setting")
+            offset = 0 if self.description.range_index == 0 else 3
+            value = raw[offset] / 2
+        if not self.description.minimum <= value <= self.description.maximum:
+            raise ValueError("STEINEL sensor setting outside the supported range")
         self._attr_native_value = value
+        self._attr_available = True
+
+    async def async_set_native_value(self, value: float) -> None:
+        if not self.description.minimum <= value <= self.description.maximum:
+            raise HomeAssistantError(
+                "STEINEL sensor setting outside the supported range"
+            )
+        try:
+            if self.description.range_index is None:
+                raw = await self.coordinator.async_set_sensor_setting(
+                    self.address, self.description.setting_id, bytes((round(value),))
+                )
+            else:
+                raw = await self.coordinator.async_set_sensor_range(
+                    self.address, self.description.range_index, value
+                )
+            self._apply_value(raw)
+        except (ValueError, TimeoutError, ConnectionError) as err:
+            raise HomeAssistantError(str(err) or "No sensor setting response") from err
+        self.async_write_ha_state()

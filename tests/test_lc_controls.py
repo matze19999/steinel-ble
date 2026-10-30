@@ -31,6 +31,7 @@ def controls(integration, monkeypatch):
     for name in (
         "homeassistant.components.number",
         "homeassistant.components.switch",
+        "homeassistant.components.select",
         "homeassistant.helpers.entity",
         "homeassistant.helpers.entity_registry",
         "homeassistant.helpers.entity_platform",
@@ -51,6 +52,7 @@ def controls(integration, monkeypatch):
         BOX="box", SLIDER="slider"
     )
     modules["homeassistant.components.switch"].SwitchEntity = Entity
+    modules["homeassistant.components.select"].SelectEntity = Entity
     modules["homeassistant.helpers.entity"].EntityCategory = types.SimpleNamespace(
         CONFIG="config"
     )
@@ -67,6 +69,7 @@ def controls(integration, monkeypatch):
     package.SteinelConfigEntry = types.SimpleNamespace
     number = importlib.import_module(f"{package.__name__}.number")
     switch = importlib.import_module(f"{package.__name__}.switch")
+    select = importlib.import_module(f"{package.__name__}.select")
 
     hass = types.SimpleNamespace(data={})
     entry = types.SimpleNamespace(
@@ -80,10 +83,16 @@ def controls(integration, monkeypatch):
     )
     coordinator = integration.coordinator.SteinelCoordinator(hass, entry)
     coordinator.elements = [
-        types.SimpleNamespace(address=10, sig_models={0x1000, 0x1300}),
-        types.SimpleNamespace(address=11, sig_models={0x130F, 0x1310}),
-        types.SimpleNamespace(address=12, sig_models={0x1100}),
-        types.SimpleNamespace(address=13, sig_models={0x1100}),
+        types.SimpleNamespace(
+            address=10, sig_models={0x1000, 0x1300}, vendor_models=set()
+        ),
+        types.SimpleNamespace(
+            address=11, sig_models={0x130F, 0x1310}, vendor_models={(0x0563, 0x1001)}
+        ),
+        types.SimpleNamespace(
+            address=12, sig_models={0x1100}, vendor_models={(0x0563, 0x1003)}
+        ),
+        types.SimpleNamespace(address=13, sig_models={0x1100}, vendor_models=set()),
     ]
     coordinator.available = True
     coordinator.transport = types.SimpleNamespace(
@@ -125,6 +134,7 @@ def controls(integration, monkeypatch):
         coordinator=coordinator,
         number=number,
         switch=switch,
+        select=select,
         entry=entry,
         hass=hass,
         registry=registry,
@@ -186,6 +196,82 @@ def test_l810_restores_confirmed_threshold_on_firmware_placeholder(controls):
         11, 0x002B, (8200).to_bytes(3, "little")
     )
     assert entity._attr_native_value == 82
+
+
+def test_imported_l810_does_not_write_threshold_during_setup(controls):
+    controls.entry.data.update(product_id=7801, existing_mesh=True)
+    description = next(
+        d for d in controls.number.DESCRIPTIONS if d.key == "light_threshold"
+    )
+    entity = controls.number.SteinelLCNumber(controls.coordinator, 11, description)
+    entity.async_get_last_state = AsyncMock(
+        return_value=types.SimpleNamespace(state="82")
+    )
+    controls.coordinator.async_get_lc_property = AsyncMock(
+        return_value=(6553500).to_bytes(3, "little")
+    )
+    controls.coordinator.async_set_lc_property = AsyncMock()
+    asyncio.run(entity.async_added_to_hass())
+    controls.coordinator.async_set_lc_property.assert_not_awaited()
+
+    assert entity._attr_native_value is None
+
+
+def test_l810_sensor_settings_require_bound_vendor_model(controls):
+    controls.entry.data["product_id"] = 7801
+    controls.coordinator.elements[2].vendor_models.clear()
+    numbers, _ = _entities(controls)
+    assert len(numbers) == 7
+
+
+def test_sensor_setting_uses_acknowledged_value_and_updates_both_zones(controls):
+    coordinator = controls.coordinator
+    entities = [
+        controls.number.SteinelSensorSettingNumber(coordinator, 12, desc)
+        for desc in controls.number.SENSOR_SETTING_DESCRIPTIONS[:2]
+    ]
+    coordinator.async_get_sensor_setting = AsyncMock(
+        return_value=bytes.fromhex("c800007a")
+    )
+
+    async def write(*args):
+        raw = bytes.fromhex("6400007a")
+        coordinator.sensor_settings[(12, 0xFFF5)] = raw
+        coordinator._notify()
+        return raw
+
+    coordinator.async_set_sensor_range = AsyncMock(side_effect=write)
+
+    async def run():
+        for entity in entities:
+            await entity.async_added_to_hass()
+        await entities[0].async_set_native_value(80)
+
+    asyncio.run(run())
+    assert entities[0]._attr_native_value == 50  # Lamp clamped requested 80%.
+    assert entities[1]._attr_native_value == 61
+    assert all(entity.available for entity in entities)
+    coordinator.available = False
+    assert not any(entity.available for entity in entities)
+
+
+def test_operating_mode_does_not_change_optimistically_on_timeout(controls):
+    coordinator = controls.coordinator
+    coordinator.async_get_l810_profile = AsyncMock(return_value=4)
+    coordinator.async_set_l810_profile = AsyncMock(side_effect=TimeoutError())
+    entity = controls.select.SteinelL810ProfileSelect(coordinator)
+
+    async def run():
+        await entity.async_added_to_hass()
+        assert entity._attr_current_option == "semi_automatic"
+        with pytest.raises(controls.error, match="No operating mode response"):
+            await entity.async_select_option("automatic")
+        assert entity._attr_current_option == "semi_automatic"
+        coordinator.l810_profile = 6
+        coordinator._notify()
+        assert entity._attr_current_option == "nightmatic"
+
+    asyncio.run(run())
 
 
 @pytest.mark.parametrize("sensors", [{"12": ["motion"]}, {"12": ["presence"]}])

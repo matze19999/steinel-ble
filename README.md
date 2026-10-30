@@ -386,3 +386,33 @@ in this repository. The protocol implementation is independent work based on
 reverse-engineering for interoperability purposes.
 
 Licensed under the [MIT License](https://github.com/matze19999/steinel-ble/blob/main/LICENSE).
+
+
+### L 810 SC (product 7801)
+
+Support is based on a lamp running firmware 1.1.30 with four elements:
+primary light, Light LC, motion, and illuminance. This device requires standard
+Sensor Get messages; illuminance is returned by an unfiltered Sensor Status.
+Motion is polled separately because its pulses can be shorter than the shared
+sensor polling interval. Motion changes and valid illuminance readings are
+forwarded as Sensor Status messages to the separate LC element. The lamp keeps
+its native main/basic lighting cycle and daylight threshold.
+
+The L 810 exposes motion range settings for two zones, a raw sensitivity setting
+(0–4), and its built-in operating profiles. The zone percentages are not a
+verified conversion to metres, and the sensitivity levels are manufacturer
+values. Fade-on time and occupancy delay are also exposed. If firmware returns
+65535 lx instead of a usable threshold after startup, a previously confirmed
+threshold within the entity range is restored. This device-specific recovery
+can write the threshold during entity setup; normal LC setup remains read-only.
+
+For this device, sequence blocks are reserved before use in
+`.storage/steinel_ble.sequence.<entry_id>.json`. Keep this journal with Home
+Assistant backups. Missing journals apply a one-time recovery gap; an old backup
+or deleted journal cannot guarantee replay-safe recovery. Exhaustion fails
+explicitly; this allocator does not initiate an IV Update.
+
+Motion, illuminance, daylight blocking, and main/basic lighting were reported
+working on the source installation. The combined upstream port is covered by
+unit tests but has not yet been tested on the lamp. These observations do not
+establish long-term reconnection reliability after a power outage.

@@ -18,6 +18,9 @@ def controls(integration, monkeypatch):
         _attr_native_value = None
         _attr_is_on = None
 
+        async def async_added_to_hass(self):
+            pass
+
         def async_on_remove(self, callback):
             self.remove_callback = callback
 
@@ -31,14 +34,21 @@ def controls(integration, monkeypatch):
         "homeassistant.helpers.entity",
         "homeassistant.helpers.entity_registry",
         "homeassistant.helpers.entity_platform",
+        "homeassistant.helpers.restore_state",
     ):
         module = modules[name] = types.ModuleType(name)
         monkeypatch.setitem(sys.modules, name, module)
         parent, attr = name.rsplit(".", 1)
         monkeypatch.setattr(sys.modules[parent], attr, module, raising=False)
+
+    class RestoreEntity:
+        async def async_get_last_state(self):
+            return None
+
+    modules["homeassistant.helpers.restore_state"].RestoreEntity = RestoreEntity
     modules["homeassistant.components.number"].NumberEntity = Entity
     modules["homeassistant.components.number"].NumberMode = types.SimpleNamespace(
-        BOX="box"
+        BOX="box", SLIDER="slider"
     )
     modules["homeassistant.components.switch"].SwitchEntity = Entity
     modules["homeassistant.helpers.entity"].EntityCategory = types.SimpleNamespace(
@@ -144,6 +154,38 @@ def test_separate_sensor_elements_expose_five_numbers_and_two_switches(controls)
     assert {entity.address for entity in numbers + switches} == {11}
     assert not controls.coordinator.supports_sensor_lighting(12)
     controls.node.request.assert_not_awaited()
+
+
+def test_l810_adds_sensor_settings_without_adding_them_to_other_models(controls):
+    controls.entry.data["product_id"] = 7801
+    numbers, _ = _entities(controls)
+    assert len(numbers) == 10
+    assert (
+        sum(isinstance(n, controls.number.SteinelSensorSettingNumber) for n in numbers)
+        == 3
+    )
+
+
+def test_l810_restores_confirmed_threshold_on_firmware_placeholder(controls):
+    controls.entry.data["product_id"] = 7801
+    description = next(
+        d for d in controls.number.DESCRIPTIONS if d.key == "light_threshold"
+    )
+    entity = controls.number.SteinelLCNumber(controls.coordinator, 11, description)
+    entity.async_get_last_state = AsyncMock(
+        return_value=types.SimpleNamespace(state="82")
+    )
+    controls.coordinator.async_get_lc_property = AsyncMock(
+        return_value=(6553500).to_bytes(3, "little")
+    )
+    controls.coordinator.async_set_lc_property = AsyncMock(
+        return_value=(8200).to_bytes(3, "little")
+    )
+    asyncio.run(entity.async_added_to_hass())
+    controls.coordinator.async_set_lc_property.assert_awaited_once_with(
+        11, 0x002B, (8200).to_bytes(3, "little")
+    )
+    assert entity._attr_native_value == 82
 
 
 @pytest.mark.parametrize("sensors", [{"12": ["motion"]}, {"12": ["presence"]}])

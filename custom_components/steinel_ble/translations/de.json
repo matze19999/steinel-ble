@@ -87,6 +87,8 @@
       "basic_light": {"name": "Grundlichthelligkeit"},
       "main_light_time": {"name": "Hauptlichtdauer"},
       "basic_light_time": {"name": "Grundlichtdauer"},
+      "fade_on_time": {"name": "Hauptlicht-Einblendzeit"},
+      "occupancy_delay": {"name": "Bewegungs-Ansprechverzögerung"},
       "light_threshold": {"name": "Lichtschwelle"}
     },
     "switch": {

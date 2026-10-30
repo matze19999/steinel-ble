@@ -79,6 +79,7 @@ from .const import (
     MODEL_LIGHT_LC_SERVER,
     MODEL_LIGHT_LIGHTNESS_SERVER,
     MODEL_SCHEMA_VERSION,
+    MODEL_SENSOR_SERVER,
     MODEL_STEINEL_SENSOR_EXTENSION,
     NODE_COMPLETE,
     NODE_PENDING,
@@ -106,6 +107,7 @@ from .const import (
     OP_LIGHT_LIGHTNESS_GET,
     OP_LIGHT_LIGHTNESS_SET,
     OP_LIGHT_LIGHTNESS_STATUS,
+    OP_SENSOR_GET,
     OP_SENSOR_STATUS,
     OP_STEINEL_SENSOR_DATA_STATUS,
     SENSOR_SCHEMA_VERSION,
@@ -120,6 +122,7 @@ from .sensor_protocol import (
     decode_sensor_status,
     decode_sensor_value,
 )
+from .sequence_store import SequenceStore
 from .state_store import restore_light_states, serialize_light_states
 
 _LOGGER = logging.getLogger(__name__)
@@ -147,6 +150,13 @@ class SteinelCoordinator:
         self.lc_modes: dict[tuple[int, bool], bool] = {}
         self._lc_lock = asyncio.Lock()
         self._listeners: list[Callable[[], None]] = []
+        self._sensor_request_lock = asyncio.Lock()
+        self._motion_task = None
+        self._sequence_store = None
+        if str(entry.data.get(CONF_PRODUCT_ID)) == "7801":
+            self._sequence_store = SequenceStore(
+                hass, entry.entry_id, entry.data.get(CONF_SEQUENCE, 0)
+            )
         self._connect_lock = asyncio.Lock()
         self._disconnect_event = asyncio.Event()
         self._reconnect_task: asyncio.Task[None] | None = None
@@ -271,6 +281,7 @@ class SteinelCoordinator:
                 < SENSOR_SCHEMA_VERSION
             ):
                 await self._async_detect_sensor_properties()
+            await self._async_setup_l810_sensors()
             await self._async_refresh_light_states()
             self.available = True
             self.last_connected = datetime.now(UTC)
@@ -300,7 +311,12 @@ class SteinelCoordinator:
             self._idle_task.cancel()
             await asyncio.gather(self._idle_task, return_exceptions=True)
             self._idle_task = None
-        for task_name in ("_sensor_task", "_state_task", "_advertisement_task"):
+        for task_name in (
+            "_sensor_task",
+            "_motion_task",
+            "_state_task",
+            "_advertisement_task",
+        ):
             task = getattr(self, task_name)
             if task:
                 task.cancel()
@@ -656,6 +672,9 @@ class SteinelCoordinator:
             self._sequence_changed,
             self._access_received,
             float(self._option(CONF_COMMAND_TIMEOUT, DEFAULT_COMMAND_TIMEOUT)),
+            sequence_allocator=self._sequence_store.async_next
+            if getattr(self, "_sequence_store", None)
+            else None,
         )
         transport.handler = node.handle_pdu
         node.src = self.entry.data.get(CONF_SOURCE_ADDRESS, 0x0001)
@@ -762,8 +781,68 @@ class SteinelCoordinator:
                         exc_info=True,
                     )
 
+    async def _async_setup_l810_sensors(self) -> None:
+        """Bind and discover the L 810 SC motion and illuminance elements."""
+        if str(self.entry.data.get(CONF_PRODUCT_ID)) != "7801":
+            return
+        assert self.node is not None
+        primary = self.entry.data[CONF_UNICAST_ADDRESS]
+        expected = ((primary + 2, "motion"), (primary + 3, "illuminance"))
+        elements = {element.address: element for element in self.elements}
+        models_changed = False
+        for address, _name in expected:
+            element = elements.get(address)
+            if element is None or MODEL_SENSOR_SERVER in element.sig_models:
+                continue
+            if self.entry.data.get(CONF_EXISTING_MESH):
+                continue
+            bind = (
+                address.to_bytes(2, "little")
+                + b"\x00\x00"
+                + MODEL_SENSOR_SERVER.to_bytes(2, "little")
+            )
+            try:
+                _src, status = await self.node.request(
+                    primary, 32829, bind, 32830, device_key=True, timeout=2
+                )
+            except Exception:
+                _LOGGER.debug(
+                    "L 810 Sensor Server bind failed on 0x%04X", address, exc_info=True
+                )
+                continue
+            if len(status) >= 7 and status[0] == 0 and (status[1:7] == bind):
+                element.sig_models.add(MODEL_SENSOR_SERVER)
+                models_changed = True
+        if models_changed:
+            self._update_entry({CONF_ELEMENTS: self._serialize_elements(self.elements)})
+        properties = dict(self.entry.data.get(CONF_SENSOR_PROPERTIES, {}))
+        changed = False
+        for address, name in expected:
+            element = elements.get(address)
+            if element is None or MODEL_SENSOR_SERVER not in element.sig_models:
+                continue
+            names = list(properties.get(str(address), []))
+            if name in names:
+                continue
+            try:
+                raw = await self.async_get_sensor(
+                    address, SENSOR_PROPERTIES[name], timeout=2
+                )
+            except Exception:
+                _LOGGER.debug("L 810 %s discovery failed", name, exc_info=True)
+                continue
+            self.sensor_values[address, name] = decode_sensor_value(name, raw)
+            properties[str(address)] = [*names, name]
+            changed = True
+        if changed:
+            self._update_entry({CONF_SENSOR_PROPERTIES: properties})
+
     async def _async_detect_sensor_properties(self) -> None:
         """Probe vendor sensor properties once and persist only valid replies."""
+        if str(self.entry.data.get(CONF_PRODUCT_ID)) == "7801":
+            await self._async_setup_l810_sensors()
+            self._update_entry({CONF_SENSOR_SCHEMA_VERSION: SENSOR_SCHEMA_VERSION})
+            return
         detected: dict[str, list[str]] = {}
         for element in self.elements:
             if (
@@ -1054,6 +1133,27 @@ class SteinelCoordinator:
 
         try:
             node = await self.async_ensure_connected()
+            if str(self.entry.data.get(CONF_PRODUCT_ID)) == "7801":
+                # Firmware 1.1.30 returns lux only in unfiltered SIG Sensor Status.
+                async with self._sensor_request_lock:
+                    _, parameters = await node.request(
+                        address,
+                        OP_SENSOR_GET,
+                        b""
+                        if property_id == SENSOR_PROPERTIES["illuminance"]
+                        else property_id.to_bytes(2, "little"),
+                        OP_SENSOR_STATUS,
+                        timeout=timeout
+                        or float(
+                            self._option(CONF_COMMAND_TIMEOUT, DEFAULT_COMMAND_TIMEOUT)
+                        ),
+                    )
+                values = decode_sensor_status(parameters)
+                if property_id not in values:
+                    raise ValueError(
+                        f"Sensor Status does not contain 0x{property_id:04X}"
+                    )
+                return values[property_id]
             _src, _opcode, parameters = await node.request_vendor(
                 address,
                 0xD0,
@@ -1067,13 +1167,201 @@ class SteinelCoordinator:
         finally:
             self._arm_idle_disconnect()
 
+    async def _async_sensor_setting_request(
+        self,
+        node: MeshNode,
+        address: int,
+        opcode: int,
+        setting_id: int,
+        value: bytes = b"",
+    ) -> bytes:
+        """Request one authenticated STEINEL sensor setting."""
+        prefix = SENSOR_PROPERTIES["motion"].to_bytes(
+            2, "little"
+        ) + setting_id.to_bytes(2, "little")
+        src, response_opcode, parameters = await node.request_vendor(
+            address,
+            opcode,
+            prefix + value,
+            timeout=float(self._option(CONF_COMMAND_TIMEOUT, DEFAULT_COMMAND_TIMEOUT)),
+            response_opcode=0xD76305,
+            response_matcher=lambda parameters: parameters.startswith(prefix),
+        )
+        if src != address or response_opcode != 0xD76305:
+            raise ValueError("Unexpected STEINEL sensor setting response")
+        if len(parameters) < 5 or not parameters.startswith(prefix):
+            raise ValueError("Malformed STEINEL sensor setting response")
+        if parameters[4] != 3:
+            raise ValueError("STEINEL sensor setting is not writable")
+        return parameters[5:]
+
+    async def async_get_sensor_setting(self, address: int, setting_id: int) -> bytes:
+        """Read an L 810 sensor setting."""
+        try:
+            node = await self.async_ensure_connected()
+            async with self._sensor_request_lock:
+                return await self._async_sensor_setting_request(
+                    node, address, 212, setting_id
+                )
+        finally:
+            self._arm_idle_disconnect()
+
+    async def async_set_sensor_setting(
+        self, address: int, setting_id: int, value: bytes
+    ) -> bytes:
+        """Write an L 810 sensor setting."""
+        try:
+            node = await self.async_ensure_connected()
+            async with self._sensor_request_lock:
+                return await self._async_sensor_setting_request(
+                    node, address, 213, setting_id, value
+                )
+        finally:
+            self._arm_idle_disconnect()
+
+    async def async_set_sensor_range(
+        self, address: int, range_index: int, percentage: float
+    ) -> bytes:
+        """Change one L 810 range while preserving the other range."""
+        try:
+            node = await self.async_ensure_connected()
+            async with self._sensor_request_lock:
+                current = bytearray(
+                    await self._async_sensor_setting_request(node, address, 212, 65525)
+                )
+                if len(current) != 4 or range_index not in (0, 1):
+                    raise ValueError("Malformed STEINEL range setting")
+                current[0 if range_index == 0 else 3] = round(percentage * 2)
+                return await self._async_sensor_setting_request(
+                    node, address, 213, 65525, bytes(current)
+                )
+        finally:
+            self._arm_idle_disconnect()
+
+    async def async_get_l810_profile(self) -> int:
+        """Read the active L 810 operating profile."""
+        try:
+            node = await self.async_ensure_connected()
+            controller = self.entry.data[CONF_UNICAST_ADDRESS] + 1
+            async with self._lc_request_lock:
+                src, opcode, parameters = await node.request_vendor(
+                    controller,
+                    0xC4,
+                    b"\x1f\x00",
+                    response_opcode=0xC76305,
+                    response_matcher=lambda parameters: parameters.startswith(
+                        b"\x1f\x00"
+                    ),
+                )
+            if src != controller or opcode != 0xC76305:
+                raise ValueError("Unexpected STEINEL profile response")
+            if len(parameters) != 4 or not parameters.startswith(b"\x1f\x00"):
+                raise ValueError("Malformed STEINEL profile response")
+            return int.from_bytes(parameters[2:4], "little")
+        finally:
+            self._arm_idle_disconnect()
+
+    async def async_set_l810_profile(self, profile: int) -> None:
+        """Activate and remember a built-in L 810 operating profile."""
+        if profile not in (3, 4, 5, 6):
+            raise ValueError("Unsupported STEINEL operating profile")
+        try:
+            node = await self.async_ensure_connected()
+            primary = self.entry.data[CONF_UNICAST_ADDRESS]
+            controller = primary + 1
+            scene = profile.to_bytes(2, "little")
+            async with self._lc_request_lock:
+                await node.send_access(
+                    primary, 0x8242, scene + bytes((node.next_tid(),))
+                )
+                await node.send_access(controller, 0xC56305, b"\x1f\x00" + scene)
+                if profile == 3:
+                    await node.request(
+                        controller,
+                        OP_LIGHT_LC_MODE_SET,
+                        b"\x01",
+                        OP_LIGHT_LC_MODE_STATUS,
+                    )
+                    await node.request(
+                        controller,
+                        OP_LIGHT_LC_OCCUPANCY_SET,
+                        b"\x01",
+                        OP_LIGHT_LC_OCCUPANCY_STATUS,
+                    )
+        finally:
+            self._arm_idle_disconnect()
+
+    async def _async_l810_motion_poll_loop(self) -> None:
+        """Poll L 810 motion after startup without monopolizing Bluetooth."""
+        await asyncio.sleep(5)
+        address = self.entry.data[CONF_UNICAST_ADDRESS] + 2
+        while not self._shutting_down:
+            if not self._light_commands:
+                previous = self.sensor_values.get((address, "motion"))
+                previous_value = previous.value if previous is not None else None
+                try:
+                    raw = await self.async_get_sensor(
+                        address, SENSOR_PROPERTIES["motion"], timeout=2
+                    )
+                except Exception:
+                    pass
+                else:
+                    value = decode_sensor_value("motion", raw)
+                    self.sensor_values[address, "motion"] = value
+                    if value.value is not None and value.value != previous_value:
+                        try:
+                            await self._async_forward_l810_motion(raw)
+                        except Exception:
+                            _LOGGER.debug(
+                                "Forwarding L 810 motion to LC failed", exc_info=True
+                            )
+                    self._notify()
+            # Motion pulses are shorter than the shared sensor polling interval.
+            await asyncio.sleep(0.25)
+
+    async def _async_forward_l810_motion(self, raw: bytes) -> None:
+        """Forward the L 810 sensor state to its separate Light LC element."""
+        if not raw:
+            return
+        node = await self.async_ensure_connected()
+        controller = self.entry.data[CONF_UNICAST_ADDRESS] + 1
+        parameters = b"@\x08" + raw[:1]
+        await node.send_access(controller, OP_SENSOR_STATUS, parameters)
+
+    async def _async_forward_l810_illuminance(self, raw: bytes) -> None:
+        """Forward measured daylight to the separate L 810 Light LC element."""
+        if len(raw) != 3 or raw == b"\xff\xff\xff":
+            return
+        node = await self.async_ensure_connected()
+        controller = self.entry.data[CONF_UNICAST_ADDRESS] + 1
+        parameters = b"\xc4\t" + raw
+        await node.send_access(controller, OP_SENSOR_STATUS, parameters)
+
     def _start_sensor_polling(self) -> None:
         """Start one polling loop for all properties of this node."""
         properties = self.entry.data.get(CONF_SENSOR_PROPERTIES, {})
         if properties and (self._sensor_task is None or self._sensor_task.done()):
-            self._sensor_task = self.hass.async_create_task(
-                self._async_sensor_poll_loop(),
-                f"steinel_ble sensor polling {self.address}",
+            if str(self.entry.data.get(CONF_PRODUCT_ID)) == "7801":
+                self._sensor_task = self.entry.async_create_background_task(
+                    self.hass,
+                    self._async_sensor_poll_loop(),
+                    f"steinel_ble sensor polling {self.address}",
+                )
+            else:
+                self._sensor_task = self.hass.async_create_task(
+                    self._async_sensor_poll_loop(),
+                    f"steinel_ble sensor polling {self.address}",
+                )
+
+        if (
+            str(self.entry.data.get(CONF_PRODUCT_ID)) == "7801"
+            and any("motion" in names for names in properties.values())
+            and (self._motion_task is None or self._motion_task.done())
+        ):
+            self._motion_task = self.entry.async_create_background_task(
+                self.hass,
+                self._async_l810_motion_poll_loop(),
+                "steinel_ble L 810 motion polling",
             )
 
     async def _async_sensor_poll_loop(self) -> None:
@@ -1097,18 +1385,34 @@ class SteinelCoordinator:
                 property_id = SENSOR_PROPERTIES.get(name)
                 if property_id is None:
                     continue
+                previous = self.sensor_values.get((int(address_text), name))
                 try:
                     raw = await self.async_get_sensor(int(address_text), property_id)
                 except Exception:
-                    _LOGGER.debug(
-                        "Sensor property 0x%04X read failed for element 0x%04X",
-                        property_id,
-                        int(address_text),
-                        exc_info=True,
-                    )
                     continue
                 value = decode_sensor_value(name, raw)
-                self.sensor_values[(int(address_text), name)] = value
+                if (
+                    str(self.entry.data.get(CONF_PRODUCT_ID)) == "7801"
+                    and value.value is None
+                    and previous is not None
+                    and (previous.value is not None)
+                ):
+                    self.sensor_values[int(address_text), name] = previous
+                    continue
+                self.sensor_values[int(address_text), name] = value
+                if (
+                    name == "illuminance"
+                    and value.value is not None
+                    and (str(self.entry.data.get(CONF_PRODUCT_ID)) == "7801")
+                    and (int(address_text) == self.entry.data[CONF_UNICAST_ADDRESS] + 3)
+                    and (not self._light_commands)
+                ):
+                    try:
+                        await self._async_forward_l810_illuminance(raw)
+                    except Exception:
+                        _LOGGER.debug(
+                            "Forwarding L 810 illuminance to LC failed", exc_info=True
+                        )
                 changed = True
         if changed:
             self._notify()

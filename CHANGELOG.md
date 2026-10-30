@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+- Support the L 810 SC's separate standard motion and illuminance elements,
+  unfiltered lux reads, fast background motion polling, and Sensor Status
+  forwarding to its native Light LC controller.
+- Add L 810 sensor range/sensitivity and operating-profile controls, fade/delay
+  settings, and recovery of a confirmed daylight threshold when firmware
+  reports its placeholder value.
+- Reserve L 810 Mesh sequence blocks on disk before use, retaining upstream
+  beacon/IV handling and imported model bindings.
+
 ## 0.7.0
 
 - Expose the existing Light LC settings when the controller and occupancy

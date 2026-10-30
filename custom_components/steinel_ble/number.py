@@ -11,9 +11,10 @@ from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.entity import EntityCategory
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
+from homeassistant.helpers.restore_state import RestoreEntity
 
 from . import SteinelConfigEntry
-from .const import MODEL_LIGHT_LC_SETUP_SERVER
+from .const import CONF_PRODUCT_ID, CONF_UNICAST_ADDRESS, MODEL_LIGHT_LC_SETUP_SERVER
 
 
 @dataclass(frozen=True)
@@ -61,10 +62,64 @@ DESCRIPTIONS = (
 )
 
 
+L810_EXTRA_DESCRIPTIONS = (
+    LCNumberDescription(
+        "fade_on_time",
+        "Main light fade-on time",
+        0x0037,
+        0,
+        3600,
+        0.1,
+        UnitOfTime.SECONDS,
+        "time",
+    ),
+    LCNumberDescription(
+        "occupancy_delay",
+        "Motion response delay",
+        0x003A,
+        0,
+        3600,
+        0.1,
+        UnitOfTime.SECONDS,
+        "time",
+    ),
+)
+
+
+@dataclass(frozen=True)
+class SensorSettingDescription:
+    key: str
+    name: str
+    setting_id: int
+    minimum: float
+    maximum: float
+    step: float
+    unit: str | None
+    range_index: int | None = None
+
+
+SENSOR_SETTING_DESCRIPTIONS = (
+    SensorSettingDescription(
+        "motion_range_1", "Motion range zone 1", 0xFFF5, 0, 100, 1, PERCENTAGE, 0
+    ),
+    SensorSettingDescription(
+        "motion_range_2", "Motion range zone 2", 0xFFF5, 0, 100, 1, PERCENTAGE, 1
+    ),
+    SensorSettingDescription(
+        "motion_sensitivity", "Motion sensitivity (0–4)", 0xFFF6, 0, 4, 1, None
+    ),
+)
+
+
 async def async_setup_entry(
     hass, entry: SteinelConfigEntry, async_add_entities: AddConfigEntryEntitiesCallback
 ) -> None:
     coordinator = entry.runtime_data
+    descriptions = (
+        DESCRIPTIONS + L810_EXTRA_DESCRIPTIONS
+        if str(entry.data.get(CONF_PRODUCT_ID)) == "7801"
+        else DESCRIPTIONS
+    )
     registry = er.async_get(hass)
     supported = {
         element.address
@@ -75,21 +130,29 @@ async def async_setup_entry(
     for element in coordinator.elements:
         if element.address in supported:
             continue
-        for description in DESCRIPTIONS:
+        for description in descriptions:
             unique_id = f"{coordinator.address}_{element.address:04x}_{description.key}"
             if entity_id := registry.async_get_entity_id(
                 "number", "steinel_ble", unique_id
             ):
                 registry.async_remove(entity_id)
-    async_add_entities(
+    entities = list(
         SteinelLCNumber(coordinator, element.address, description)
         for element in coordinator.elements
         if element.address in supported
-        for description in DESCRIPTIONS
+        for description in descriptions
     )
 
+    if str(entry.data.get(CONF_PRODUCT_ID)) == "7801":
+        sensor_address = entry.data[CONF_UNICAST_ADDRESS] + 2
+        entities.extend(
+            SteinelSensorSettingNumber(coordinator, sensor_address, description)
+            for description in SENSOR_SETTING_DESCRIPTIONS
+        )
+    async_add_entities(entities)
 
-class SteinelLCNumber(NumberEntity):
+
+class SteinelLCNumber(NumberEntity, RestoreEntity):
     """A configurable Light LC property."""
 
     _attr_has_entity_name = True
@@ -113,6 +176,8 @@ class SteinelLCNumber(NumberEntity):
         self._attr_native_unit_of_measurement = description.unit
 
     async def async_added_to_hass(self) -> None:
+        await super().async_added_to_hass()
+        previous = await self.async_get_last_state()
         self.async_on_remove(
             self.coordinator.async_add_listener(self._handle_coordinator_update)
         )
@@ -120,6 +185,23 @@ class SteinelLCNumber(NumberEntity):
             raw = await self.coordinator.async_get_lc_property(
                 self.address, self.description.property_id
             )
+            if (
+                str(self.coordinator.entry.data.get(CONF_PRODUCT_ID)) == "7801"
+                and self.description.property_id == 0x002B
+                and self._decode(raw) == 65535
+                and previous is not None
+            ):
+                try:
+                    restored = float(previous.state)
+                except ValueError:
+                    pass
+                else:
+                    if self.description.minimum <= restored <= self.description.maximum:
+                        raw = await self.coordinator.async_set_lc_property(
+                            self.address,
+                            self.description.property_id,
+                            self._encode(restored),
+                        )
             self._apply_value(raw)
         except (HomeAssistantError, ValueError):
             self._attr_available = False
@@ -176,3 +258,55 @@ class SteinelLCNumber(NumberEntity):
         if not self._apply_value(raw):
             raise HomeAssistantError("Invalid Light LC property value response")
         self.async_write_ha_state()
+
+
+class SteinelSensorSettingNumber(NumberEntity):
+    """A configurable L 810 motion-sensor setting."""
+
+    _attr_has_entity_name = True
+    _attr_should_poll = False
+    _attr_mode = NumberMode.SLIDER
+
+    def __init__(
+        self, coordinator, address: int, description: SensorSettingDescription
+    ) -> None:
+        self.coordinator = coordinator
+        self.address = address
+        self.description = description
+        self._attr_name = description.name
+        self._attr_unique_id = f"{coordinator.address}_{address:04x}_{description.key}"
+        self._attr_device_info = coordinator.device_info
+        self._attr_native_min_value = description.minimum
+        self._attr_native_max_value = description.maximum
+        self._attr_native_step = description.step
+        self._attr_native_unit_of_measurement = description.unit
+
+    async def async_added_to_hass(self) -> None:
+        try:
+            raw = await self.coordinator.async_get_sensor_setting(
+                self.address, self.description.setting_id
+            )
+            if self.description.range_index is None:
+                if len(raw) != 1 or raw[0] > 4:
+                    raise ValueError("Malformed STEINEL sensitivity setting")
+                self._attr_native_value = raw[0]
+            else:
+                if len(raw) != 4:
+                    raise ValueError("Malformed STEINEL range setting")
+                offset = 0 if self.description.range_index == 0 else 3
+                self._attr_native_value = raw[offset] / 2
+        except Exception:
+            self._attr_available = False
+
+    async def async_set_native_value(self, value: float) -> None:
+        if self.description.range_index is None:
+            await self.coordinator.async_set_sensor_setting(
+                self.address,
+                self.description.setting_id,
+                bytes((round(value),)),
+            )
+        else:
+            await self.coordinator.async_set_sensor_range(
+                self.address, self.description.range_index, value
+            )
+        self._attr_native_value = value

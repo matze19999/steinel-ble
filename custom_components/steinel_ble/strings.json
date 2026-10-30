@@ -89,6 +89,8 @@
       "basic_light": {"name": "Basic light brightness"},
       "main_light_time": {"name": "Main light duration"},
       "basic_light_time": {"name": "Basic light duration"},
+      "fade_on_time": {"name": "Main light fade-on time"},
+      "occupancy_delay": {"name": "Motion response delay"},
       "light_threshold": {"name": "Light threshold"}
     },
     "switch": {

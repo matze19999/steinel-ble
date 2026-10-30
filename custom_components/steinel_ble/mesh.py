@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections import Counter
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 
 from cryptography.exceptions import InvalidTag
@@ -117,6 +117,8 @@ class MeshNode:
         sequence_changed: Callable[[int], None],
         access_received: Callable[[int, int, bytes], None] | None = None,
         request_timeout: float = 15,
+        *,
+        sequence_allocator: Callable[[], Awaitable[int]] | None = None,
     ) -> None:
         self.transport = transport
         self.net_keys = NetworkKeys.derive(net_key)
@@ -131,6 +133,7 @@ class MeshNode:
         self._iv_sync_open = True
         self.iv_sync_pending = False
         self.sequence = sequence
+        self._sequence_allocator = sequence_allocator
         self.primary_address = primary_address
         self.sequence_changed = sequence_changed
         self.access_received = access_received
@@ -157,6 +160,14 @@ class MeshNode:
         """Return a model transaction ID."""
         value = self._tid
         self._tid = (self._tid + 1) & 0xFF
+        return value
+
+    async def _next_sequence(self) -> int:
+        if self._sequence_allocator is None:
+            return self._take_sequence()
+        value = await self._sequence_allocator()
+        self.sequence = value + 1
+        self.sequence_changed(self.sequence)
         return value
 
     def _take_sequence(self) -> int:
@@ -386,7 +397,7 @@ class MeshNode:
 
     async def initialize_proxy_filter(self) -> None:
         """Select a blacklist filter so the proxy forwards all node traffic."""
-        seq = self._take_sequence()
+        seq = await self._next_sequence()
         pdu = network_encrypt(
             self.net_keys,
             self.transmit_iv_index,
@@ -406,7 +417,7 @@ class MeshNode:
     async def _send_network(
         self, dst: int, lower: bytes, *, ctl: bool = False, sequence: int | None = None
     ) -> int:
-        seq = self._take_sequence() if sequence is None else sequence
+        seq = await self._next_sequence() if sequence is None else sequence
         pdu = network_encrypt(
             self.net_keys,
             self.transmit_iv_index,
@@ -429,7 +440,7 @@ class MeshNode:
     ) -> None:
         """Encrypt, segment when needed, and send an access message."""
         async with self._send_lock:
-            first_seq = self._take_sequence()
+            first_seq = await self._next_sequence()
             key = self.device_key if device_key else self.app_key
             aid = 0 if device_key else k4(self.app_key)
             upper = upper_transport_encrypt(

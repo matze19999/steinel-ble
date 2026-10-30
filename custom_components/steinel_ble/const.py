@@ -3,7 +3,15 @@
 from __future__ import annotations
 
 DOMAIN = "steinel_ble"
-PLATFORMS = ["light", "sensor", "binary_sensor", "device_tracker", "number", "switch"]
+PLATFORMS = [
+    "light",
+    "sensor",
+    "binary_sensor",
+    "device_tracker",
+    "number",
+    "select",
+    "switch",
+]
 
 CONF_CONNECT_ATTEMPTS = "connect_attempts"
 CONF_COMMAND_TIMEOUT = "command_timeout"
@@ -110,3 +118,6 @@ CTL_TEMP_MAX_KELVIN = 20000
 
 DEFAULT_UNICAST_ADDRESS = 0x0100
 DEFAULT_TTL = 5
+
+MODEL_SENSOR_SERVER = 0x1100
+OP_SENSOR_GET = 0x8231

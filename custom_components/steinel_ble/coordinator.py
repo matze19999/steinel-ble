@@ -356,7 +356,7 @@ class SteinelCoordinator:
             self._update_entry(updates)
         if self._advertisement_task:
             self._advertisement_task.cancel()
-        self._advertisement_task = self.hass.async_create_task(
+        self._advertisement_task = self.hass.async_create_background_task(
             self._async_expire_advertisement(),
             f"steinel_ble advertisement timeout {self.address}",
         )
@@ -388,7 +388,7 @@ class SteinelCoordinator:
     def _start_reconnect_monitor(self) -> None:
         if self._reconnect_task is None or self._reconnect_task.done():
             self._shutting_down = False
-            self._reconnect_task = self.hass.async_create_task(
+            self._reconnect_task = self.hass.async_create_background_task(
                 self._async_reconnect_monitor(),
                 f"steinel_ble reconnect {self.address}",
             )
@@ -427,7 +427,7 @@ class SteinelCoordinator:
         self._cancel_idle_disconnect()
         if not self._option(CONF_DISCONNECT_WHEN_IDLE, DEFAULT_DISCONNECT_WHEN_IDLE):
             return
-        self._idle_task = self.hass.async_create_task(
+        self._idle_task = self.hass.async_create_background_task(
             self._async_idle_disconnect(),
             f"steinel_ble idle disconnect {self.address}",
         )
@@ -1071,7 +1071,7 @@ class SteinelCoordinator:
         """Start one polling loop for all properties of this node."""
         properties = self.entry.data.get(CONF_SENSOR_PROPERTIES, {})
         if properties and (self._sensor_task is None or self._sensor_task.done()):
-            self._sensor_task = self.hass.async_create_task(
+            self._sensor_task = self.hass.async_create_background_task(
                 self._async_sensor_poll_loop(),
                 f"steinel_ble sensor polling {self.address}",
             )
@@ -1120,7 +1120,7 @@ class SteinelCoordinator:
             return
         if self._state_task:
             self._state_task.cancel()
-        self._state_task = self.hass.async_create_task(
+        self._state_task = self.hass.async_create_background_task(
             self._async_persist_light_states(),
             f"steinel_ble persist state {self.address}",
         )

@@ -12,6 +12,7 @@ from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 from . import SteinelConfigEntry
 from .const import (
     CONF_SENSOR_PROPERTIES,
+    MODEL_SENSOR_SERVER,
     MODEL_STEINEL_SENSOR_EXTENSION,
     STEINEL_COMPANY_ID,
 )
@@ -29,7 +30,8 @@ async def async_setup_entry(
     async_add_entities(
         SteinelMotionSensor(coordinator, element, name)
         for element in coordinator.elements
-        if (STEINEL_COMPANY_ID, MODEL_STEINEL_SENSOR_EXTENSION) in element.vendor_models
+        if MODEL_SENSOR_SERVER in element.sig_models
+        or (STEINEL_COMPANY_ID, MODEL_STEINEL_SENSOR_EXTENSION) in element.vendor_models
         for name in ("motion", "presence")
         if name
         in entry.data.get(CONF_SENSOR_PROPERTIES, {}).get(str(element.address), [])

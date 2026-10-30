@@ -21,8 +21,8 @@ async def async_setup_entry(
     """Create one reachability tracker for the configured node."""
     coordinator = entry.runtime_data
     unique_id = f"{coordinator.address}_reachability"
-    device = dr.async_get(hass).async_get_device(
-        identifiers={(DOMAIN, coordinator.address)}
+    device = dr.async_get(hass).async_get_device_by_identifier(
+        (DOMAIN, coordinator.address), entry.entry_id
     )
     er.async_get(hass).async_get_or_create(
         "device_tracker",

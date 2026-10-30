@@ -7,7 +7,7 @@ import importlib.util
 import sys
 import types
 from pathlib import Path
-from unittest.mock import Mock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 
@@ -105,6 +105,51 @@ def _receiving_node():
     return mesh.MeshNode(
         None, bytes(16), bytes([1]) * 16, bytes([2]) * 16, 0, 0, 2, Mock(), Mock()
     )
+
+
+def test_reserved_sequence_closes_initial_iv_sync_window():
+    node = _receiving_node()
+    node._sequence_allocator = AsyncMock(return_value=65536)
+    assert asyncio.run(node._next_sequence()) == 65536
+    assert node.sequence == 65537
+    assert not node._iv_sync_open
+    with pytest.raises(RuntimeError, match="must precede outgoing"):
+        asyncio.run(node.synchronize_iv_index())
+
+
+@pytest.mark.parametrize("value", [-1, 0xFFFFFF, True])
+def test_invalid_reserved_sequence_is_rejected(value):
+    node = _receiving_node()
+    node._sequence_allocator = AsyncMock(return_value=value)
+    with pytest.raises(RuntimeError, match="sequence allocation"):
+        asyncio.run(node._next_sequence())
+
+
+def test_sig_response_matcher_ignores_unrelated_sensor_publication():
+    node = _receiving_node()
+
+    async def deliver(payload, sequence):
+        upper = mesh.upper_transport_encrypt(
+            node.app_key, 1, sequence, 2, 1, 0, b"\x52" + payload
+        )
+        await node._handle_upper(2, 1, sequence, 1, mesh.k4(node.app_key), 0, upper)
+
+    async def send(*args, **kwargs):
+        await deliver(b"\xa0\x09\x01", 1)
+        assert not node._requests[0][-1].done()
+        await deliver(b"\x40\x08\x00", 2)
+
+    node.send_access = AsyncMock(side_effect=send)
+    result = asyncio.run(
+        node.request(
+            2,
+            0x8231,
+            b"\x42\x00",
+            0x52,
+            response_matcher=lambda data: data[:2] == b"\x40\x08",
+        )
+    )
+    assert result == (2, b"\x40\x08\x00")
 
 
 def test_receive_diagnostics_distinguish_network_failures():

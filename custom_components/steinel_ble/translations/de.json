@@ -87,7 +87,23 @@
       "basic_light": {"name": "Grundlichthelligkeit"},
       "main_light_time": {"name": "Hauptlichtdauer"},
       "basic_light_time": {"name": "Grundlichtdauer"},
+      "fade_on_time": {"name": "Hauptlicht-Einblendzeit"},
+      "occupancy_delay": {"name": "Bewegungs-Ansprechverzögerung"},
+      "motion_range_1": {"name": "Bewegungsreichweite Zone 1"},
+      "motion_range_2": {"name": "Bewegungsreichweite Zone 2"},
+      "motion_sensitivity": {"name": "Bewegungsempfindlichkeit (0–4)"},
       "light_threshold": {"name": "Lichtschwelle"}
+    },
+    "select": {
+      "operating_profile": {
+        "name": "Betriebsart",
+        "state": {
+          "automatic": "Vollautomatik",
+          "semi_automatic": "Halbautomatik",
+          "switch": "Schaltermodus",
+          "nightmatic": "Nightmatic"
+        }
+      }
     },
     "switch": {
       "automatic_light_control": {"name": "Automatische Lichtsteuerung"},

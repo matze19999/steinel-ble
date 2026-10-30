@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections import Counter
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 
 from cryptography.exceptions import InvalidTag
@@ -117,6 +117,8 @@ class MeshNode:
         sequence_changed: Callable[[int], None],
         access_received: Callable[[int, int, bytes], None] | None = None,
         request_timeout: float = 15,
+        *,
+        sequence_allocator: Callable[[], Awaitable[int]] | None = None,
     ) -> None:
         self.transport = transport
         self.net_keys = NetworkKeys.derive(net_key)
@@ -131,6 +133,7 @@ class MeshNode:
         self._iv_sync_open = True
         self.iv_sync_pending = False
         self.sequence = sequence
+        self._sequence_allocator = sequence_allocator
         self.primary_address = primary_address
         self.sequence_changed = sequence_changed
         self.access_received = access_received
@@ -138,7 +141,12 @@ class MeshNode:
         self.src = 0x0001
         self._tid = 0
         self._requests: list[
-            tuple[int, int | None, asyncio.Future[tuple[int, bytes]]]
+            tuple[
+                int,
+                int | None,
+                Callable[[bytes], bool] | None,
+                asyncio.Future[tuple[int, bytes]],
+            ]
         ] = []
         self._segments: dict[tuple[int, int, int], _InboundSegments] = {}
         self._segment_acks: dict[int, asyncio.Event] = {}
@@ -157,6 +165,19 @@ class MeshNode:
         """Return a model transaction ID."""
         value = self._tid
         self._tid = (self._tid + 1) & 0xFF
+        return value
+
+    async def _next_sequence(self) -> int:
+        if self._sequence_allocator is None:
+            return self._take_sequence()
+        value = await self._sequence_allocator()
+        if type(value) is not int or not 0 <= value <= 0xFFFFFE:
+            raise RuntimeError(
+                "Invalid or exhausted Bluetooth Mesh sequence allocation"
+            )
+        self._iv_sync_open = False
+        self.sequence = value + 1
+        self.sequence_changed(self.sequence)
         return value
 
     def _take_sequence(self) -> int:
@@ -363,11 +384,12 @@ class MeshNode:
             self.rx_stats["access_invalid"] += 1
             return
         self.rx_stats["access_authenticated"] += 1
-        for expected, source, future in tuple(self._requests):
+        for expected, source, matches, future in tuple(self._requests):
             if (
                 not future.done()
                 and opcode == expected
                 and (source is None or source == src)
+                and (matches is None or matches(parameters))
             ):
                 future.set_result((src, parameters))
                 break
@@ -386,7 +408,7 @@ class MeshNode:
 
     async def initialize_proxy_filter(self) -> None:
         """Select a blacklist filter so the proxy forwards all node traffic."""
-        seq = self._take_sequence()
+        seq = await self._next_sequence()
         pdu = network_encrypt(
             self.net_keys,
             self.transmit_iv_index,
@@ -406,7 +428,7 @@ class MeshNode:
     async def _send_network(
         self, dst: int, lower: bytes, *, ctl: bool = False, sequence: int | None = None
     ) -> int:
-        seq = self._take_sequence() if sequence is None else sequence
+        seq = await self._next_sequence() if sequence is None else sequence
         pdu = network_encrypt(
             self.net_keys,
             self.transmit_iv_index,
@@ -429,7 +451,7 @@ class MeshNode:
     ) -> None:
         """Encrypt, segment when needed, and send an access message."""
         async with self._send_lock:
-            first_seq = self._take_sequence()
+            first_seq = await self._next_sequence()
             key = self.device_key if device_key else self.app_key
             aid = 0 if device_key else k4(self.app_key)
             upper = upper_transport_encrypt(
@@ -476,12 +498,13 @@ class MeshNode:
         *,
         device_key: bool = False,
         timeout: float | None = None,
+        response_matcher: Callable[[bytes], bool] | None = None,
     ) -> tuple[int, bytes]:
         """Send access data and wait for its acknowledged response."""
         future: asyncio.Future[tuple[int, bytes]] = (
             asyncio.get_running_loop().create_future()
         )
-        request = (response_opcode, dst, future)
+        request = (response_opcode, dst, response_matcher, future)
         self._requests.append(request)
         try:
             await self.send_access(dst, opcode, parameters, device_key=device_key)

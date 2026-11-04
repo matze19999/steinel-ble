@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+- Load a provisioned or imported node with a known composition even when the
+  first proxy connection fails: entities start unavailable, the reconnect
+  monitor keeps retrying, and the entry reloads once the node is reached,
+  instead of staying in setup retry with Home Assistant's growing back-off.
+- Fail commands fast while that deferred setup is pending, so entities do not
+  queue their own connection attempts during platform setup.
+
 ## 0.8.0
 
 - Merge the startup fix from #5: reconnect, sensor polling and timers run as

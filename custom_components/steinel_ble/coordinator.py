@@ -174,6 +174,7 @@ class SteinelCoordinator:
         self._suppress_disconnect = False
         self._connection_failed = False
         self._shutting_down = False
+        self._setup_pending = False
         self.reconnect_count = 0
         self.last_connected: datetime | None = None
         self.last_error: str | None = None
@@ -269,28 +270,8 @@ class SteinelCoordinator:
             if not imported and CONF_DEVICE_KEY not in self.entry.data:
                 await self._async_provision()
             await self._async_connect_proxy()
-            if imported or (
-                not self.entry.data.get(CONF_ELEMENTS)
-                or self.entry.data.get(CONF_MODEL_SCHEMA_VERSION, 0)
-                < MODEL_SCHEMA_VERSION
-            ):
-                await self._async_configure()
-            else:
-                self.elements = self._deserialize_elements(
-                    self.entry.data[CONF_ELEMENTS]
-                )
-            if (
-                self.entry.data.get(CONF_SENSOR_SCHEMA_VERSION, 0)
-                < SENSOR_SCHEMA_VERSION
-            ):
-                await self._async_detect_sensor_properties()
-            await self._async_setup_l810_sensors()
-            await self._async_refresh_light_states()
-            self.available = True
-            self.last_connected = datetime.now(UTC)
+            await self._async_complete_setup()
             self._start_reconnect_monitor()
-            self._start_sensor_polling()
-            self._arm_idle_disconnect()
         except (
             BleakError,
             TimeoutError,
@@ -299,8 +280,63 @@ class SteinelCoordinator:
             SteinelConnectionError,
         ) as err:
             self.last_error = str(err)
-            await self.async_shutdown()
-            raise ConfigEntryNotReady(str(err)) from err
+            cached = self._cached_elements()
+            if cached is None:
+                await self.async_shutdown()
+                raise ConfigEntryNotReady(str(err)) from err
+            # A provisioned node with a known composition does not need a live
+            # connection to create its entities. Load them as unavailable and
+            # reload the entry once a proxy reaches the node, instead of
+            # failing the whole entry on a weak first connection attempt.
+            _LOGGER.warning(
+                "Initial connection to %s failed (%s); entities stay unavailable "
+                "and the connection is retried in the background",
+                self.address,
+                err,
+            )
+            if self.transport:
+                await self.transport.disconnect()
+            self.transport = self.node = None
+            self.elements = cached
+            self.available = False
+            self._setup_pending = True
+            self._start_reconnect_monitor()
+            self._disconnect_event.set()
+
+    def _cached_elements(self) -> list[ElementComposition] | None:
+        """Return a stored composition that lets entities load offline."""
+        if CONF_DEVICE_KEY not in self.entry.data:
+            return None
+        if self.entry.data.get(CONF_EXISTING_MESH):
+            if not self.entry.data.get(CONF_IMPORTED_ELEMENTS):
+                return None
+            return self._deserialize_elements(self.entry.data[CONF_IMPORTED_ELEMENTS])
+        if self.entry.data.get(CONF_NODE_STATE) != NODE_COMPLETE or (
+            not self.entry.data.get(CONF_ELEMENTS)
+            or self.entry.data.get(CONF_MODEL_SCHEMA_VERSION, 0) < MODEL_SCHEMA_VERSION
+        ):
+            return None
+        return self._deserialize_elements(self.entry.data[CONF_ELEMENTS])
+
+    async def _async_complete_setup(self) -> None:
+        """Configure the connected node and start the periodic tasks."""
+        imported = self.entry.data.get(CONF_EXISTING_MESH, False)
+        if imported or (
+            not self.entry.data.get(CONF_ELEMENTS)
+            or self.entry.data.get(CONF_MODEL_SCHEMA_VERSION, 0)
+            < MODEL_SCHEMA_VERSION
+        ):
+            await self._async_configure()
+        else:
+            self.elements = self._deserialize_elements(self.entry.data[CONF_ELEMENTS])
+        if self.entry.data.get(CONF_SENSOR_SCHEMA_VERSION, 0) < SENSOR_SCHEMA_VERSION:
+            await self._async_detect_sensor_properties()
+        await self._async_setup_l810_sensors()
+        await self._async_refresh_light_states()
+        self.available = True
+        self.last_connected = datetime.now(UTC)
+        self._start_sensor_polling()
+        self._arm_idle_disconnect()
 
     async def async_shutdown(self) -> None:
         """Disconnect and release the proxy slot."""
@@ -429,6 +465,19 @@ class SteinelCoordinator:
                         if self.transport:
                             await self.transport.disconnect()
                         await self._async_connect_proxy()
+                    if self._setup_pending:
+                        # Entities read their initial state while being added,
+                        # and sensor entities depend on detected properties:
+                        # a regular setup now that the node is reachable
+                        # covers both.
+                        _LOGGER.info(
+                            "%s is reachable again; reloading to finish setup",
+                            self.address,
+                        )
+                        self.hass.config_entries.async_schedule_reload(
+                            self.entry.entry_id
+                        )
+                        return
                     self.available = True
                     self.last_connected = datetime.now(UTC)
                     self.last_error = None
@@ -955,6 +1004,12 @@ class SteinelCoordinator:
     async def async_ensure_connected(self) -> MeshNode:
         """Reconnect the proxy before a command if necessary."""
         self._cancel_idle_disconnect()
+        if self._setup_pending:
+            # Fail fast: the reconnect monitor owns connecting until the
+            # deferred setup has run, so entities must not queue retries.
+            raise SteinelConnectionError(
+                f"{self.address} has not been reached since startup"
+            )
         async with self._connect_lock:
             if (
                 self.transport

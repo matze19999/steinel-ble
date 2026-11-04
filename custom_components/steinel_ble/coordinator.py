@@ -323,8 +323,7 @@ class SteinelCoordinator:
         imported = self.entry.data.get(CONF_EXISTING_MESH, False)
         if imported or (
             not self.entry.data.get(CONF_ELEMENTS)
-            or self.entry.data.get(CONF_MODEL_SCHEMA_VERSION, 0)
-            < MODEL_SCHEMA_VERSION
+            or self.entry.data.get(CONF_MODEL_SCHEMA_VERSION, 0) < MODEL_SCHEMA_VERSION
         ):
             await self._async_configure()
         else:

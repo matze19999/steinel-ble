@@ -124,6 +124,7 @@ def _coordinator(integration):
     cls = integration.coordinator.SteinelCoordinator
     coordinator = object.__new__(cls)
     coordinator.entry = types.SimpleNamespace(data=_entry_data())
+    coordinator.address = coordinator.entry.data["address"]
     coordinator.transport = None
     coordinator.node = types.SimpleNamespace(configure=AsyncMock())
     coordinator._setup_pending = False
@@ -243,9 +244,10 @@ def test_owned_mesh_still_configures_models(integration):
 def test_import_connection_failure_never_falls_back_to_provisioning(integration):
     coordinator = _coordinator(integration)
     coordinator._async_connect_proxy.side_effect = ConnectionError("No proxy")
+    node = coordinator.node
     asyncio.run(coordinator.async_setup())
     coordinator._async_provision.assert_not_awaited()
-    coordinator.node.configure.assert_not_awaited()
+    node.configure.assert_not_awaited()
 
 
 def test_failed_first_connection_defers_setup_for_known_node(integration):

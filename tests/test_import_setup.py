@@ -124,7 +124,11 @@ def _coordinator(integration):
     cls = integration.coordinator.SteinelCoordinator
     coordinator = object.__new__(cls)
     coordinator.entry = types.SimpleNamespace(data=_entry_data())
+    coordinator.address = coordinator.entry.data["address"]
+    coordinator.transport = None
     coordinator.node = types.SimpleNamespace(configure=AsyncMock())
+    coordinator._setup_pending = False
+    coordinator._disconnect_event = asyncio.Event()
     coordinator._update_entry = Mock(
         side_effect=lambda updates: coordinator.entry.data.update(updates)
     )
@@ -240,11 +244,49 @@ def test_owned_mesh_still_configures_models(integration):
 def test_import_connection_failure_never_falls_back_to_provisioning(integration):
     coordinator = _coordinator(integration)
     coordinator._async_connect_proxy.side_effect = ConnectionError("No proxy")
+    node = coordinator.node
+    asyncio.run(coordinator.async_setup())
+    coordinator._async_provision.assert_not_awaited()
+    node.configure.assert_not_awaited()
+
+
+def test_failed_first_connection_defers_setup_for_known_node(integration):
+    coordinator = _coordinator(integration)
+    coordinator.available = False
+    coordinator._async_connect_proxy.side_effect = ConnectionError("No proxy")
+    asyncio.run(coordinator.async_setup())
+    assert not coordinator.available
+    assert coordinator._setup_pending
+    assert coordinator.elements[0].address == 2
+    assert coordinator._disconnect_event.is_set()
+    assert coordinator.node is None
+    coordinator._start_reconnect_monitor.assert_called_once()
+    coordinator._start_sensor_polling.assert_not_called()
+    coordinator.async_shutdown.assert_not_awaited()
+
+
+def test_failed_first_connection_without_composition_is_not_ready(integration):
+    coordinator = _coordinator(integration)
+    coordinator.entry.data["existing_mesh"] = False
+    coordinator._async_connect_proxy.side_effect = ConnectionError("No proxy")
     with pytest.raises(integration.coordinator.ConfigEntryNotReady):
         asyncio.run(coordinator.async_setup())
-    coordinator._async_provision.assert_not_awaited()
-    coordinator.node.configure.assert_not_awaited()
     coordinator.async_shutdown.assert_awaited_once()
+    coordinator._start_reconnect_monitor.assert_not_called()
+
+
+def test_commands_fail_fast_while_setup_is_deferred(integration):
+    coordinator = _command_coordinator(integration)
+    coordinator._setup_pending = True
+    coordinator._connect_lock = asyncio.Lock()
+    coordinator._cancel_idle_disconnect = Mock()
+    with pytest.raises(integration.coordinator.SteinelConnectionError):
+        asyncio.run(
+            integration.coordinator.SteinelCoordinator.async_ensure_connected(
+                coordinator
+            )
+        )
+    coordinator._async_connect_proxy.assert_not_awaited()
 
 
 def test_incomplete_import_does_not_generate_keys_or_reset(integration):
@@ -609,3 +651,23 @@ def test_reconnect_monitor_recovers_without_entry_reload(integration, monkeypatc
     assert coordinator.available
     assert coordinator.reconnect_count == 1
     assert coordinator.last_error is None
+
+
+def test_reconnect_after_deferred_setup_reloads_entry(integration, monkeypatch):
+    coordinator = _command_coordinator(integration)
+    coordinator._connect_lock = asyncio.Lock()
+    coordinator.available = False
+    coordinator._setup_pending = True
+    coordinator._disconnect_event.set()
+    coordinator.reconnect_count = 0
+    coordinator.entry.entry_id = "test"
+    reload_entry = Mock()
+    coordinator.hass = types.SimpleNamespace(
+        config_entries=types.SimpleNamespace(async_schedule_reload=reload_entry)
+    )
+    monkeypatch.setattr(integration.coordinator.asyncio, "sleep", AsyncMock())
+    asyncio.run(coordinator._async_reconnect_monitor())
+    reload_entry.assert_called_once_with("test")
+    coordinator._async_connect_proxy.assert_awaited_once()
+    assert not coordinator.available
+    assert coordinator.reconnect_count == 0

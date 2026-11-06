@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Remove the GitHub Actions workflow and validation badge. Validation remains
+  available through the documented local lint, formatting and test commands.
 - Load a provisioned or imported node with a known composition even when the
   first proxy connection fails: entities start unavailable, the reconnect
   monitor keeps retrying, and the entry reloads once the node is reached,

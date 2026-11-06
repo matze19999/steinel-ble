@@ -6,7 +6,6 @@
 
 <p align="center">
   <a href="https://github.com/hacs/integration"><img src="https://img.shields.io/badge/HACS-Custom-41BDF5.svg" alt="HACS Custom"></a>
-  <a href="https://github.com/matze19999/steinel-ble/actions/workflows/validate.yml"><img src="https://github.com/matze19999/steinel-ble/actions/workflows/validate.yml/badge.svg" alt="Validate"></a>
   <a href="https://github.com/matze19999/steinel-ble/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="MIT License"></a>
 </p>
 
@@ -388,7 +387,8 @@ For a failed automatic reset, first verify that:
 
 ## Development
 
-Run the local checks with:
+GitHub Actions is disabled for this repository. Run the checks locally before
+submitting changes:
 
 ```bash
 python -m pip install -r requirements-test.txt

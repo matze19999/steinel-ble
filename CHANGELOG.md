@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.8.1
 
 - Remove the GitHub Actions workflow and validation badge. Validation remains
   available through the documented local lint, formatting and test commands.

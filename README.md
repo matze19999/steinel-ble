@@ -271,6 +271,33 @@ working on the source installation. The combined upstream port is covered by
 unit tests but has not yet been tested on the lamp. These observations do not
 establish long-term reconnection reliability after a power outage.
 
+### L 270 SC (product 7643)
+
+The L 270 contribution was tested by its author with firmware 4.1.29. Its
+separate illuminance element is read through an unfiltered SIG Sensor Get;
+motion continues to use the existing STEINEL Sensor Extension protocol.
+
+For lamps provisioned by this integration, the sensor servers publish motion
+every four seconds and illuminance every ten seconds to the lamp's own Light
+LC controller. This allows native motion/daylight control to operate without
+HA forwarding every sensor reading. The Light Lightness Server publishes
+state changes to the HA source address so automatic switching and dimming can
+update the light entity while the Bluetooth connection is active.
+
+On setup and reconnection, the integration reads these publication settings
+and corrects differences after validating the complete acknowledgement. It
+does not depend on stored one-time flags. `model_publications` in device
+diagnostics records the target, period, verification result and any error.
+
+Imported lamps retain their app-configured bindings and publications. Their
+lux sensor is read only when the imported AppKey is already bound to its SIG
+Sensor Server. Existing entries can be updated without a reset or reimport.
+
+The combined implementation still needs a hardware retest. The contributor's
+reported LC-setting resets and a lamp remaining on after reconnection are not
+confirmed fixed by this change; the integration does not automatically rewrite
+L 270 main/basic light settings or thresholds from remembered HA values.
+
 ### Connection options
 
 Open *Settings → Devices & services → STEINEL Connect Bluetooth Mesh*, select

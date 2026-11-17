@@ -83,6 +83,9 @@ from .const import (
     MODEL_STEINEL_SENSOR_EXTENSION,
     NODE_COMPLETE,
     NODE_PENDING,
+    OP_CONFIG_MODEL_PUBLICATION_GET,
+    OP_CONFIG_MODEL_PUBLICATION_SET,
+    OP_CONFIG_MODEL_PUBLICATION_STATUS,
     OP_GENERIC_ONOFF_GET,
     OP_GENERIC_ONOFF_SET,
     OP_GENERIC_ONOFF_STATUS,
@@ -153,6 +156,8 @@ class SteinelCoordinator:
         self._lc_lock = asyncio.Lock()
         self._listeners: list[Callable[[], None]] = []
         self._sensor_request_lock = asyncio.Lock()
+        self._publication_lock = asyncio.Lock()
+        self.model_publications: dict[str, dict[str, Any]] = {}
         self._motion_task: asyncio.Task[None] | None = None
         self._l810_forwarded_motion: bytes | None = None
         self._sequence_store: SequenceStore | None = None
@@ -477,6 +482,7 @@ class SteinelCoordinator:
                             self.entry.entry_id
                         )
                         return
+                    await self._async_setup_l270_publications()
                     self.available = True
                     self.last_connected = datetime.now(UTC)
                     self.last_error = None
@@ -836,36 +842,31 @@ class SteinelCoordinator:
                     )
 
     async def _async_setup_l810_sensors(self) -> None:
-        """Bind and discover the L 810 SC motion and illuminance elements."""
-        if str(self.entry.data.get(CONF_PRODUCT_ID)) != "7801":
+        """Discover the separate L 810 SC and L 270 SC sensor elements."""
+        product_id = str(self.entry.data.get(CONF_PRODUCT_ID))
+        if product_id not in ("7801", "7643"):
             return
         assert self.node is not None
         primary = self.entry.data[CONF_UNICAST_ADDRESS]
-        expected = ((primary + 2, "motion"), (primary + 3, "illuminance"))
+        expected = (
+            ((primary + 3, "illuminance"),)
+            if product_id == "7643"
+            else ((primary + 2, "motion"), (primary + 3, "illuminance"))
+        )
         elements = {element.address: element for element in self.elements}
         models_changed = False
         for address, _name in expected:
             element = elements.get(address)
             if element is None or MODEL_SENSOR_SERVER in element.sig_models:
                 continue
-            if self.entry.data.get(CONF_EXISTING_MESH):
-                continue
-            bind = (
-                address.to_bytes(2, "little")
-                + b"\x00\x00"
-                + MODEL_SENSOR_SERVER.to_bytes(2, "little")
-            )
             try:
-                _src, status = await self.node.request(
-                    primary, 0x803D, bind, 0x803E, device_key=True, timeout=2
-                )
-            except Exception:
+                bound = await self._async_bind_sensor_server(element)
+            except (TimeoutError, BleakError, ConnectionError, ValueError):
                 _LOGGER.debug(
-                    "L 810 Sensor Server bind failed on 0x%04X", address, exc_info=True
+                    "Sensor Server bind failed on 0x%04X", address, exc_info=True
                 )
                 continue
-            if len(status) >= 7 and status[0] == 0 and (status[1:7] == bind):
-                element.sig_models.add(MODEL_SENSOR_SERVER)
+            if bound:
                 models_changed = True
         if models_changed:
             self._update_entry({CONF_ELEMENTS: self._serialize_elements(self.elements)})
@@ -890,6 +891,155 @@ class SteinelCoordinator:
             changed = True
         if changed:
             self._update_entry({CONF_SENSOR_PROPERTIES: properties})
+        await self._async_setup_l270_publications()
+
+    async def _async_bind_sensor_server(self, element: ElementComposition) -> bool:
+        """Bind a standard sensor model only on a node provisioned by HA."""
+        if MODEL_SENSOR_SERVER in element.sig_models:
+            return True
+        if self.entry.data.get(CONF_EXISTING_MESH):
+            return False
+        if self.node is None:
+            raise ConnectionError("Mesh Proxy is not connected")
+        primary = self.entry.data[CONF_UNICAST_ADDRESS]
+        bind = (
+            element.address.to_bytes(2, "little")
+            + b"\x00\x00"
+            + MODEL_SENSOR_SERVER.to_bytes(2, "little")
+        )
+        src, status = await self.node.request(
+            primary,
+            0x803D,
+            bind,
+            0x803E,
+            device_key=True,
+            timeout=2,
+            response_matcher=lambda data: len(data) == 7 and data[1:] == bind,
+        )
+        if src != primary or len(status) != 7 or status != b"\x00" + bind:
+            raise ValueError(
+                f"Sensor Server binding was not acknowledged: {status.hex()}"
+            )
+        element.sig_models.add(MODEL_SENSOR_SERVER)
+        return True
+
+    async def _async_setup_l270_publications(self) -> None:
+        """Verify native sensor routing and light feedback after each connection."""
+        if str(self.entry.data.get(CONF_PRODUCT_ID)) != "7643" or self.entry.data.get(
+            CONF_EXISTING_MESH
+        ):
+            return
+        if self.node is None:
+            return
+        async with self._publication_lock:
+            primary = self.entry.data[CONF_UNICAST_ADDRESS]
+            elements = {element.address: element for element in self.elements}
+            controller = elements.get(primary + 1)
+            if controller and MODEL_LIGHT_LC_SERVER in controller.sig_models:
+                for address, period in ((primary + 2, 0x44), (primary + 3, 0x4A)):
+                    element = elements.get(address)
+                    if element is None:
+                        continue
+                    known = MODEL_SENSOR_SERVER in element.sig_models
+                    try:
+                        await self._async_bind_sensor_server(element)
+                    except (
+                        TimeoutError,
+                        BleakError,
+                        ConnectionError,
+                        ValueError,
+                    ) as err:
+                        self.model_publications[f"{address:04x}_1100"] = {
+                            "verified": False,
+                            "error": str(err) or type(err).__name__,
+                        }
+                        _LOGGER.warning("L 270 sensor binding failed: %s", err)
+                        continue
+                    if not known:
+                        self._update_entry(
+                            {CONF_ELEMENTS: self._serialize_elements(self.elements)}
+                        )
+                    await self._async_ensure_l270_publication(
+                        address, MODEL_SENSOR_SERVER, primary + 1, period
+                    )
+            light = elements.get(primary)
+            if light and MODEL_LIGHT_LIGHTNESS_SERVER in light.sig_models:
+                await self._async_ensure_l270_publication(
+                    primary,
+                    MODEL_LIGHT_LIGHTNESS_SERVER,
+                    self.entry.data.get(CONF_SOURCE_ADDRESS, 0x0001),
+                    0,
+                )
+
+    async def _async_ensure_l270_publication(
+        self, address: int, model: int, target: int, period: int
+    ) -> None:
+        """Read before writing, then validate the complete SIG publication status."""
+        node = self.node
+        if node is None:
+            return
+        primary = self.entry.data[CONF_UNICAST_ADDRESS]
+        element = address.to_bytes(2, "little")
+        model_id = model.to_bytes(2, "little")
+        desired = (
+            element
+            + target.to_bytes(2, "little")
+            + b"\x00\x00"  # HA-provisioned AppKey index 0, credential flag 0.
+            + bytes((0xFF, period, 0))
+            + model_id
+        )
+        record: dict[str, Any] = {
+            "target": target,
+            "period": period,
+            "verified": False,
+        }
+        self.model_publications[f"{address:04x}_{model:04x}"] = record
+
+        def matches(status: bytes) -> bool:
+            return (
+                len(status) == 12 and status[1:3] == element and status[-2:] == model_id
+            )
+
+        try:
+            src, status = await node.request(
+                primary,
+                OP_CONFIG_MODEL_PUBLICATION_GET,
+                element + model_id,
+                OP_CONFIG_MODEL_PUBLICATION_STATUS,
+                device_key=True,
+                timeout=5,
+                response_matcher=matches,
+            )
+            if src != primary or not matches(status) or status[0] != 0:
+                raise ValueError(
+                    f"Invalid Model Publication Get response: {status.hex()}"
+                )
+            changed = status[1:] != desired
+            if changed:
+                src, status = await node.request(
+                    primary,
+                    OP_CONFIG_MODEL_PUBLICATION_SET,
+                    desired,
+                    OP_CONFIG_MODEL_PUBLICATION_STATUS,
+                    device_key=True,
+                    timeout=5,
+                    response_matcher=lambda data: (
+                        matches(data) and (data[0] != 0 or data[1:] == desired)
+                    ),
+                )
+                if src != primary or status != b"\x00" + desired:
+                    raise ValueError(
+                        f"Model Publication Set was not acknowledged: {status.hex()}"
+                    )
+            record.update(verified=True, updated=changed)
+        except (TimeoutError, BleakError, ConnectionError, ValueError) as err:
+            record["error"] = str(err) or type(err).__name__
+            _LOGGER.warning(
+                "L 270 publication setup failed on 0x%04X model 0x%04X: %s",
+                address,
+                model,
+                record["error"],
+            )
 
     async def _async_detect_sensor_properties(self) -> None:
         """Probe vendor sensor properties once and persist only valid replies."""
@@ -1193,8 +1343,11 @@ class SteinelCoordinator:
 
         try:
             node = await self.async_ensure_connected()
-            if str(self.entry.data.get(CONF_PRODUCT_ID)) == "7801":
-                # Firmware 1.1.30 returns lux only in unfiltered SIG Sensor Status.
+            product_id = str(self.entry.data.get(CONF_PRODUCT_ID))
+            if product_id == "7801" or (
+                product_id == "7643" and property_id == SENSOR_PROPERTIES["illuminance"]
+            ):
+                # These split illuminance elements require unfiltered SIG queries.
                 async with self._sensor_request_lock:
                     _, parameters = await node.request(
                         address,

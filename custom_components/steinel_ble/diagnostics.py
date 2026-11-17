@@ -74,6 +74,7 @@ async def async_get_config_entry_diagnostics(
                 f"{address:04x}_{name}": value.raw.hex()
                 for (address, name), value in coordinator.sensor_values.items()
             },
+            "model_publications": dict(coordinator.model_publications),
             "lc_properties": {
                 f"{address:04x}_{property_id:04x}": value.hex()
                 for (address, property_id), value in coordinator.lc_properties.items()

@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.9.0
+
+- Integrate friend66-bier's L 270 SC (product 7643, firmware 4.1.29)
+  contribution from #7: discover the separate SIG illuminance element and
+  query its lux value with an unfiltered Sensor Get.
+- On HA-provisioned L 270 devices, bind the sensor servers and configure their
+  native motion/lux publications to Light LC at 4/10-second intervals. Publish
+  Light Lightness state changes back to the HA source address.
+- Verify complete binding and publication replies, including element, model,
+  target and publication parameters. Ignore unrelated/late acknowledgements.
+- Read publications on setup and reconnection, write only when they differ,
+  and expose verification errors through device diagnostics instead of relying
+  on permanent one-time flags.
+- Preserve imported AppKey bindings and publications; imported L 270 devices
+  only read the standard lux sensor if it is already bound.
+- The reported LC-setting resets and persistent daylight-on state still need
+  hardware logs and follow-up investigation.
+
 ## 0.8.1
 
 - Remove the GitHub Actions workflow and validation badge. Validation remains
